@@ -109,10 +109,14 @@ export const ExportPopover = ({ projectId }: ExportPopoverProps) => {
   };
 
   const handleResetExport = async () => {
-    await ky.post("/api/github/export/reset", {
-      json: { projectId },
-    });
-    setOpen(false);
+    try {
+      await ky.post("/api/github/export/reset", {
+        json: { projectId },
+      });
+      setOpen(false);
+    } catch {
+      toast.error("Unable to reset export");
+    }
   };
 
   const renderContent = () => {
@@ -178,12 +182,18 @@ export const ExportPopover = ({ projectId }: ExportPopoverProps) => {
     }
 
     if (exportStatus === "failed") {
+      const rawErrorMessage = project?.exportProgress?.errorMessage;
+      const errorMessage =
+        typeof rawErrorMessage === "string" && rawErrorMessage.trim().length > 0
+          ? rawErrorMessage.trim()
+          : "Something went wrong. Please try again.";
+
       return (
-        <div className="flex flex-col items-center gap-3">
+        <div className="flex flex-col items-center gap-3 w-full">
           <XCircleIcon className="size-6 text-rose-500" />
           <p className="text-sm font-medium">Unable to export</p>
-          <p className="text-xs text-muted-foreground text-center">
-            Something went wrong. Please try again.
+          <p className="text-xs text-muted-foreground text-center break-words whitespace-pre-wrap max-h-40 overflow-y-auto w-full">
+            {errorMessage}
           </p>
           <Button
             size="sm"
