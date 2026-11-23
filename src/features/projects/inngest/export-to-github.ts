@@ -25,6 +25,25 @@ type FileWithUrl = Doc<"files"> & {
 export const EXPORT_BATCH_SIZE = 50;
 export const EXPORT_CONCURRENCY_LIMIT = 5;
 
+/**
+ * Resolves the repository default branch name with a safe fallback to "main".
+ */
+export const resolveDefaultBranch = (defaultBranch?: string | null): string => {
+  if (!defaultBranch || typeof defaultBranch !== "string") {
+    return "main";
+  }
+  const trimmed = defaultBranch.trim();
+  return trimmed.length > 0 ? trimmed : "main";
+};
+
+/**
+ * Formats branch name into Git ref path (e.g. heads/main).
+ */
+export const getBranchRef = (branch: string): string => {
+  const cleanBranch = branch.replace(/^refs\/heads\//, "").replace(/^heads\//, "");
+  return `heads/${cleanBranch}`;
+};
+
 export const exportToGithub = inngest.createFunction(
   {
     id: "export-to-github",
@@ -113,15 +132,47 @@ export const exportToGithub = inngest.createFunction(
     // Wait for GitHub to initialize the repo (auto_init is async on GitHub's side)
     await step.sleep("wait-for-repo-init", "3s");
 
+    const defaultBranch = resolveDefaultBranch(repo.default_branch);
+    const branchRef = getBranchRef(defaultBranch);
+
     // Get the initial commit SHA (we need this as parent for our commit)
     const initialCommitSha = await step.run("get-initial-commit", async () => {
       return await withExponentialBackoff(async () => {
-        const { data: ref } = await octokit.rest.git.getRef({
-          owner: user.login,
-          repo: repoName,
-          ref: "heads/main",
-        });
-        return ref.object.sha;
+        try {
+          const { data: ref } = await octokit.rest.git.getRef({
+            owner: user.login,
+            repo: repoName,
+            ref: branchRef,
+          });
+          return ref.object.sha;
+        } catch (error) {
+          // If default branch ref lookup fails, fallback to main then master
+          if (defaultBranch !== "main") {
+            try {
+              const { data: mainRef } = await octokit.rest.git.getRef({
+                owner: user.login,
+                repo: repoName,
+                ref: "heads/main",
+              });
+              return mainRef.object.sha;
+            } catch {
+              // Ignore fallback failure
+            }
+          }
+          if (defaultBranch !== "master") {
+            try {
+              const { data: masterRef } = await octokit.rest.git.getRef({
+                owner: user.login,
+                repo: repoName,
+                ref: "heads/master",
+              });
+              return masterRef.object.sha;
+            } catch {
+              // Ignore fallback failure
+            }
+          }
+          throw error;
+        }
       });
     });
 
@@ -370,13 +421,13 @@ export const exportToGithub = inngest.createFunction(
       });
     });
 
-    // Update the main branch reference to point to our new commit
+    // Update the default branch reference to point to our new commit
     await step.run("update-branch-ref", async () => {
       return await withExponentialBackoff(async () => {
         return await octokit.rest.git.updateRef({
           owner: user.login,
           repo: repoName,
-          ref: "heads/main",
+          ref: branchRef,
           sha: commit.sha,
           force: true,
         });
