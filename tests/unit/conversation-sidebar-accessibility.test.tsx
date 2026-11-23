@@ -15,6 +15,7 @@ window.HTMLElement.prototype.scrollIntoView = vi.fn();
 // Mock hooks from use-conversations
 const mockCreateConversation = vi.fn();
 const mockRenameConversation = vi.fn();
+const mockDeleteConversation = vi.fn();
 let mockConversations: Array<{ _id: string; title: string; _creationTime: number }> = [
   { _id: "conv_1", title: "First Conversation", _creationTime: Date.now() - 60000 },
 ];
@@ -24,6 +25,7 @@ vi.mock("@/features/conversations/hooks/use-conversations", () => ({
   useConversations: () => mockConversations,
   useCreateConversation: () => mockCreateConversation,
   useRenameConversation: () => mockRenameConversation,
+  useDeleteConversation: () => mockDeleteConversation,
   useMessages: () => [],
   useExecutionEvents: () => [],
 }));

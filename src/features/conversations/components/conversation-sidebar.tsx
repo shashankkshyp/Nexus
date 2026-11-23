@@ -55,8 +55,15 @@ export const ConversationSidebar = ({
   const createConversation = useCreateConversation();
   const conversations = useConversations(projectId);
 
-  const activeConversationId =
-    selectedConversationId ?? conversations?.[0]?._id ?? null;
+  // If the currently selected conversation was deleted (or does not exist in conversations),
+  // fall back to the first available conversation or null.
+  const activeConversationId = (() => {
+    if (selectedConversationId) {
+      const exists = conversations?.some((c) => c._id === selectedConversationId);
+      if (exists) return selectedConversationId;
+    }
+    return conversations?.[0]?._id ?? null;
+  })();
 
   const activeConversation = useConversation(activeConversationId);
   const conversationMessages = useMessages(activeConversationId);
@@ -134,6 +141,12 @@ export const ConversationSidebar = ({
         open={pastConversationsOpen}
         onOpenChange={setPastConversationsOpen}
         onSelect={setSelectedConversationId}
+        onDeleted={(deletedId) => {
+          if (selectedConversationId === deletedId) {
+            const remaining = conversations?.filter((c) => c._id !== deletedId) ?? [];
+            setSelectedConversationId(remaining[0]?._id ?? null);
+          }
+        }}
       />
       <div className="flex flex-col h-full bg-sidebar">
         <div className="h-8.75 flex items-center justify-between border-b">
