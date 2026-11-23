@@ -7,6 +7,7 @@ import {
   computeFileTreeDiff,
   FileTreeSnapshot,
 } from "@/features/preview/utils/file-tree";
+import { parseCommand } from "@/features/preview/utils/command-parser";
 import { useFiles } from "@/features/projects/hooks/use-files";
 
 import { Id } from "../../../../convex/_generated/dataModel";
@@ -183,7 +184,16 @@ export const useWebContainer = ({
         setStatus("installing");
 
         const installCmd = settings?.installCommand?.trim() || "npm install";
-        const [installBin, ...installArgs] = installCmd.split(/\s+/).filter(Boolean);
+        let installParsed;
+        try {
+          installParsed = parseCommand(installCmd);
+        } catch (parseErr) {
+          throw new Error(
+            `Invalid install command configuration: ${parseErr instanceof Error ? parseErr.message : "Parse error"}`
+          );
+        }
+
+        const { executable: installBin, args: installArgs } = installParsed;
         appendOutput(`$ ${installCmd}\n`);
 
         const installProcess = await container.spawn(installBin, installArgs, {
@@ -218,7 +228,16 @@ export const useWebContainer = ({
 
         // 2. Start development server process
         const devCmd = settings?.devCommand?.trim() || "npm run dev";
-        const [devBin, ...devArgs] = devCmd.split(/\s+/).filter(Boolean);
+        let devParsed;
+        try {
+          devParsed = parseCommand(devCmd);
+        } catch (parseErr) {
+          throw new Error(
+            `Invalid development command configuration: ${parseErr instanceof Error ? parseErr.message : "Parse error"}`
+          );
+        }
+
+        const { executable: devBin, args: devArgs } = devParsed;
         appendOutput(`\n$ ${devCmd}\n`);
 
         const devProcess = await container.spawn(devBin, devArgs, {
