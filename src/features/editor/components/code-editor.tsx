@@ -11,27 +11,46 @@ import { customSetup } from "../extensions/custom-setup";
 import { suggestion } from "../extensions/suggestion";
 import { quickEdit } from "../extensions/quick-edit";
 import { selectionTooltip } from "../extensions/selection-tooltip";
+import type { SelectedCodeContext } from "../extensions/selection-tooltip";
+import type { Id } from "../../../../convex/_generated/dataModel";
 
 interface Props {
+  projectId: Id<"projects">;
+  fileId: Id<"files">;
   fileName: string;
+  filePath?: string;
   initialValue?: string;
   onChange: (value: string) => void;
   onSave?: () => void;
+  conversationId?: Id<"conversations">;
+  onSelectedCode?: (context: SelectedCodeContext) => void;
 }
 
-export const CodeEditor = ({ 
-  fileName, 
-  initialValue = "",
-  onChange,
-  onSave
-}: Props) => {
+export const CodeEditor = (props: Props) => {
+  const projectId = props.projectId;
+  const fileId = props.fileId;
+  const fileName = props.fileName;
+  const filePath = props.filePath;
+  const initialValue = props.initialValue ?? "";
+  const onChange = props.onChange;
+  const onSave = props.onSave;
+  const conversationId = props.conversationId;
+  const onSelectedCode = props.onSelectedCode;
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onSaveRef = useRef(onSave);
+  const onSelectedCodeRef = useRef(onSelectedCode);
+  const conversationIdRef = useRef(conversationId);
 
   useEffect(() => {
     onSaveRef.current = onSave;
   }, [onSave]);
+  useEffect(() => {
+    onSelectedCodeRef.current = onSelectedCode;
+  }, [onSelectedCode]);
+  useEffect(() => {
+    conversationIdRef.current = conversationId;
+  }, [conversationId]);
 
   const languageExtension = useMemo(() => {
     return getLanguageExtension(fileName)
@@ -79,7 +98,16 @@ export const CodeEditor = ({
         languageExtension,
         suggestion(fileName),
         quickEdit(fileName),
-        selectionTooltip(),
+        selectionTooltip(
+          {
+            projectId,
+            fileId,
+            fileName,
+            filePath: filePath ?? fileName,
+            conversationId: conversationIdRef.current,
+          },
+          (context) => onSelectedCodeRef.current?.(context),
+        ),
         keymap.of([indentWithTab]),
         minimap(),
         indentationMarkers(),

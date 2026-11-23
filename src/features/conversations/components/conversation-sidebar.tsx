@@ -1,6 +1,6 @@
 import ky from "ky";
 import { toast } from "sonner";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CopyIcon, HistoryIcon, LoaderIcon, PlusIcon } from "lucide-react";
 
 import {
@@ -38,13 +38,25 @@ import { Id } from "../../../../convex/_generated/dataModel";
 import { DEFAULT_CONVERSATION_TITLE } from "../constants";
 import { PastConversationsDialog } from "./past-conversations-dialog";
 import { ExecutionActivityTimeline } from "./execution-activity-timeline";
+import {
+  appendSelectedCodeToDraft,
+  type SelectedCodeContext,
+} from "@/features/editor/extensions/selection-tooltip";
 
 interface ConversationSidebarProps {
   projectId: Id<"projects">;
+  selectedCodeContext?: SelectedCodeContext | null;
+  onSelectedCodeConsumed?: () => void;
+  onActiveConversationChange?: (
+    conversationId: Id<"conversations"> | null,
+  ) => void;
 }
 
 export const ConversationSidebar = ({
   projectId,
+  selectedCodeContext,
+  onSelectedCodeConsumed,
+  onActiveConversationChange,
 }: ConversationSidebarProps) => {
   const [input, setInput] = useState("");
   const [selectedConversationId, setSelectedConversationId] =
@@ -64,6 +76,51 @@ export const ConversationSidebar = ({
     }
     return conversations?.[0]?._id ?? null;
   })();
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    onActiveConversationChange?.(activeConversationId);
+  }, [activeConversationId, onActiveConversationChange]);
+
+  useEffect(() => {
+    if (!selectedCodeContext) return;
+    if (selectedCodeContext.projectId !== projectId) {
+      onSelectedCodeConsumed?.();
+      return;
+    }
+    if (
+      selectedCodeContext.conversationId &&
+      selectedCodeContext.conversationId !== activeConversationId
+    ) {
+      onSelectedCodeConsumed?.();
+      return;
+    }
+    if (!activeConversationId) {
+      onSelectedCodeConsumed?.();
+      return;
+    }
+
+    setInput((currentDraft) => {
+      const nextDraft = appendSelectedCodeToDraft(
+        currentDraft,
+        selectedCodeContext,
+      );
+      const cursorPosition = nextDraft.length;
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus();
+        textarea.setSelectionRange(cursorPosition, cursorPosition);
+      });
+      return nextDraft;
+    });
+    onSelectedCodeConsumed?.();
+  }, [
+    selectedCodeContext,
+    projectId,
+    activeConversationId,
+    onSelectedCodeConsumed,
+  ]);
 
   const activeConversation = useConversation(activeConversationId);
   const conversationMessages = useMessages(activeConversationId);
@@ -239,6 +296,7 @@ export const ConversationSidebar = ({
           <PromptInput onSubmit={handleSubmit} className="mt-2">
             <PromptInputBody>
               <PromptInputTextarea
+                ref={textareaRef}
                 placeholder="Ask Nexus anything..."
                 onChange={(e) => setInput(e.target.value)}
                 value={input}

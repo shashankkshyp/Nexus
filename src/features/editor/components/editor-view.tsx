@@ -10,10 +10,19 @@ import { TopNavigation } from "./top-navigation";
 import { FileBreadcrumbs } from "./file-breadcrumbs";
 import { Id } from "../../../../convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
+import type { SelectedCodeContext } from "../extensions/selection-tooltip";
 
 const DEBOUNCE_MS = 1500;
 
-export const EditorView = ({ projectId }: { projectId: Id<"projects"> }) => {
+export const EditorView = ({
+  projectId,
+  conversationId,
+  onSelectedCode,
+}: {
+  projectId: Id<"projects">;
+  conversationId?: Id<"conversations">;
+  onSelectedCode?: (context: SelectedCodeContext) => void;
+}) => {
   const {
     activeTabId,
     getTabData,
@@ -223,10 +232,14 @@ export const EditorView = ({ projectId }: { projectId: Id<"projects"> }) => {
         {isActiveFileText && (
           <CodeEditor
             key={activeFile._id}
+            projectId={projectId}
+            fileId={activeFile._id}
             fileName={activeFile.name}
             initialValue={editorValue}
             onChange={handleBufferChange}
             onSave={handleManualSave}
+            conversationId={conversationId}
+            onSelectedCode={onSelectedCode}
           />
         )}
         {isActiveFileBinary && (
