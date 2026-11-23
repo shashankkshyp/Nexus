@@ -22,6 +22,7 @@ import { FileExplorer } from "./file-explorer";
 import { PreviewView } from "./preview-view";
 import { Doc, Id } from "../../../../convex/_generated/dataModel";
 import { ExportPopover } from "./export-popover";
+import type { SelectedCodeContext } from "@/features/editor/extensions/selection-tooltip";
 
 const MIN_SIDEBAR_WIDTH = 200;
 const MAX_SIDEBAR_WIDTH = 800;
@@ -59,7 +60,15 @@ const Tab = ({
   );
 };
 
-export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
+export const ProjectIdView = ({
+  projectId,
+  conversationId,
+  onSelectedCode,
+}: {
+  projectId: Id<"projects">;
+  conversationId?: Id<"conversations">;
+  onSelectedCode?: (context: SelectedCodeContext) => void;
+}) => {
   const [activeView, setActiveView] = useState<"editor" | "preview">("editor");
   const [quickOpen, setQuickOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -227,7 +236,11 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
               <FileExplorer projectId={projectId} />
             </Allotment.Pane>
             <Allotment.Pane>
-              <EditorView projectId={projectId} />
+              <EditorView
+                projectId={projectId}
+                conversationId={conversationId}
+                onSelectedCode={onSelectedCode}
+              />
             </Allotment.Pane>
           </Allotment>
         </div>
