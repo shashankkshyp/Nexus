@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach, type MockInstance } from "vitest";
 import React from "react";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 
@@ -675,8 +675,8 @@ import * as suggestionFetcherModule from "@/features/editor/extensions/suggestio
 import * as quickEditFetcherModule from "@/features/editor/extensions/quick-edit/fetcher";
 
 describe("CodeMirror Extensions - Tab AI State Isolation (Issue #66)", () => {
-  let suggestionFetcherSpy: ReturnType<typeof vi.spyOn>;
-  let quickEditFetcherSpy: ReturnType<typeof vi.spyOn>;
+  let suggestionFetcherSpy: MockInstance<typeof suggestionFetcherModule.fetcher>;
+  let quickEditFetcherSpy: MockInstance<typeof quickEditFetcherModule.fetcher>;
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -692,16 +692,15 @@ describe("CodeMirror Extensions - Tab AI State Isolation (Issue #66)", () => {
 
   describe("Suggestion Extension Isolation", () => {
     it("manages independent debounce timers and abort signals across multiple editor views", async () => {
-      let signalA: { aborted: boolean } | null = null;
-      let signalB: { aborted: boolean } | null = null;
+      let signalA: AbortSignal | null = null;
+      let signalB: AbortSignal | null = null;
 
-      suggestionFetcherSpy.mockImplementation((payload: unknown, signal: AbortSignal) => {
-        const req = payload as { fileName: string };
-        if (req.fileName === "fileA.ts") {
+      suggestionFetcherSpy.mockImplementation((payload, signal) => {
+        if (payload.fileName === "fileA.ts") {
           signalA = signal;
           return new Promise(() => {});
         }
-        if (req.fileName === "fileB.ts") {
+        if (payload.fileName === "fileB.ts") {
           signalB = signal;
           return new Promise(() => {});
         }
@@ -753,14 +752,14 @@ describe("CodeMirror Extensions - Tab AI State Isolation (Issue #66)", () => {
       });
       expect(suggestionFetcherSpy).toHaveBeenCalledTimes(1);
       expect(signalA).not.toBeNull();
-      expect(signalA?.aborted).toBe(false);
+      expect(signalA!.aborted).toBe(false);
 
       // View A types again before resolveA, triggering abort of previous request A
       viewA.dispatch({
         changes: { from: 26, insert: "\nconst a3 = 3;" },
         selection: { anchor: 40 },
       });
-      expect(signalA?.aborted).toBe(true);
+      expect(signalA!.aborted).toBe(true);
 
       // View B's timer should still fire at 100ms later (total 400ms from start)
       act(() => {
@@ -768,7 +767,7 @@ describe("CodeMirror Extensions - Tab AI State Isolation (Issue #66)", () => {
       });
       expect(suggestionFetcherSpy).toHaveBeenCalledTimes(2);
       expect(signalB).not.toBeNull();
-      expect(signalB?.aborted).toBe(false);
+      expect(signalB!.aborted).toBe(false);
 
       // Clean up
       viewA.destroy();
@@ -778,8 +777,8 @@ describe("CodeMirror Extensions - Tab AI State Isolation (Issue #66)", () => {
     });
 
     it("cancels pending debounce timers and aborts in-flight request when editor view is destroyed", async () => {
-      let signalA: { aborted: boolean } | null = null;
-      suggestionFetcherSpy.mockImplementation((_payload: unknown, signal: AbortSignal) => {
+      let signalA: AbortSignal | null = null;
+      suggestionFetcherSpy.mockImplementation((_payload, signal) => {
         signalA = signal;
         return new Promise(() => {}); // never resolves
       });
@@ -805,11 +804,12 @@ describe("CodeMirror Extensions - Tab AI State Isolation (Issue #66)", () => {
         vi.advanceTimersByTime(300);
       });
       expect(suggestionFetcherSpy).toHaveBeenCalledTimes(1);
-      expect(signalA?.aborted).toBe(false);
+      expect(signalA).not.toBeNull();
+      expect(signalA!.aborted).toBe(false);
 
       // Destroy view
       view.destroy();
-      expect(signalA?.aborted).toBe(true);
+      expect(signalA!.aborted).toBe(true);
 
       container.remove();
     });
@@ -860,7 +860,7 @@ describe("CodeMirror Extensions - Tab AI State Isolation (Issue #66)", () => {
     it("operates strictly on its own EditorView and does not affect other views", async () => {
       let resolveQuickEditA: ((val: string | null) => void) | null = null;
 
-      quickEditFetcherSpy.mockImplementation((_payload: unknown, _signal: AbortSignal) => {
+      quickEditFetcherSpy.mockImplementation(() => {
         return new Promise((resolve) => {
           resolveQuickEditA = resolve;
         });
@@ -932,8 +932,8 @@ describe("CodeMirror Extensions - Tab AI State Isolation (Issue #66)", () => {
     });
 
     it("cancels in-flight quick-edit request on Cancel button without affecting other views", async () => {
-      let quickEditSignalA: { aborted: boolean } | null = null;
-      quickEditFetcherSpy.mockImplementation((_payload: unknown, signal: AbortSignal) => {
+      let quickEditSignalA: AbortSignal | null = null;
+      quickEditFetcherSpy.mockImplementation((_payload, signal) => {
         quickEditSignalA = signal;
         return new Promise(() => {}); // never resolves
       });
@@ -960,13 +960,14 @@ describe("CodeMirror Extensions - Tab AI State Isolation (Issue #66)", () => {
       const form = containerA.querySelector("form") as HTMLFormElement;
       form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
 
-      expect(quickEditSignalA?.aborted).toBe(false);
+      expect(quickEditSignalA).not.toBeNull();
+      expect(quickEditSignalA!.aborted).toBe(false);
 
       // Click Cancel
       const cancelButton = containerA.querySelectorAll("button")[0];
       cancelButton.click();
 
-      expect(quickEditSignalA?.aborted).toBe(true);
+      expect(quickEditSignalA!.aborted).toBe(true);
       expect(viewA.state.field(quickEditState)).toBe(false);
 
       viewA.destroy();
