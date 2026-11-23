@@ -1034,3 +1034,396 @@ During our architectural audit of Nexus WebContainer integration:
 - In [`next.config.ts`](../next.config.ts), `headers()` applies COOP/COEP to all routes (`/:path*`).
 - In [`src/features/preview/hooks/use-webcontainer.ts`](../src/features/preview/hooks/use-webcontainer.ts), `WebContainer.boot({ coep: "credentialless" })` correctly coordinates with the credentialless policy.
 - In production environments where developers test on mobile devices or local network IP addresses (`http://192.168.x.x:3000`), browsers will report `window.isSecureContext === false` and disable `SharedArrayBuffer`. When testing on non-localhost physical devices, an HTTPS proxy (such as `mkcert` or `ngrok http 3000`) is required to establish a valid Secure Context.
+
+---
+
+## 10. Inngest Agent Tools and Execution Conventions
+
+Nexus employs an autonomous AI coding assistant powered by [Inngest Agent Kit](https://github.com/inngest/agent-kit) running within background Inngest serverless workflow functions. This section provides an architectural and operational reference for agent tools, execution tracking, data-layer mutations, authorization boundaries, retry semantics, and cancellation behaviors.
+
+### A. Overview
+
+The AI message processing architecture connects users with an autonomous reasoning loop capable of reading, creating, modifying, and organizing project codebases:
+
+```mermaid
+flowchart TD
+    subgraph Trigger ["Trigger Phase"]
+        UserMsg["User Message in Chat"] --> PostMsg["POST /api/messages"]
+        PostMsg --> SendEvt["inngest.send('message/sent')"]
+    end
+
+    subgraph InngestWorker ["Inngest Function: processMessage"]
+        EvtListen["Listen: message/sent"] --> StepSleep["step.sleep('wait-for-db-sync', '1s')"]
+        StepSleep --> StepGetConv["step.run('get-conversation')"]
+        StepGetConv --> StepGetHistory["step.run('get-recent-messages')"]
+        StepGetHistory --> StepTitle["step.run('update-conversation-title') (if default)"]
+        StepTitle --> StepStart["step.run('record-execution-start')"]
+        StepStart --> AgentLoop["Agent Loop (network.run / maxIter: 10)"]
+    end
+
+    subgraph AgentLoopBox ["Agent Reasoning & Tool Calls"]
+        AgentLoop --> AgentDecide{"Agent Decision"}
+        AgentDecide -->|Tool Call| ToolTracker["runTrackedTool Wrapper"]
+        ToolTracker --> ConvexStart["system.recordToolStart"]
+        ToolTracker --> ToolExec["Tool Handler Execution (step.run)"]
+        ToolExec --> ConvexDB["Convex System Mutation (internalKey)"]
+        ToolExec --> ToolDone{"Success?"}
+        ToolDone -->|Yes| ConvexComplete["system.recordToolComplete"]
+        ToolDone -->|No| ConvexFail["system.recordToolFail"]
+        ConvexComplete --> AgentDecide
+        ConvexFail --> AgentDecide
+        AgentDecide -->|Text Output & No Tool Calls| FinalResponse["Final Response Streamed"]
+    end
+
+    subgraph Completion ["Completion Phase"]
+        FinalResponse --> StepUpdateMsg["step.run('update-assistant-message')"]
+        StepUpdateMsg --> ConvexMsg["system.updateMessageContent"]
+        StepUpdateMsg --> ConvexEnd["system.recordExecutionEnd ('completed')"]
+    end
+
+    subgraph CancellationPath ["Cancellation Flow (message/cancel)"]
+        CancelReq["POST /api/messages/cancel"] --> SendCancel["inngest.send('message/cancel')"]
+        SendCancel --> CancelMatch{"event.data.messageId == async.data.messageId"}
+        CancelMatch -->|Matched| AbortWorkflow["Abort in-flight processMessage"]
+    end
+```
+
+Key architectural characteristics:
+- **Decoupled Asynchronous Processing:** Initiated via `POST /api/messages`, returning HTTP 200 immediately while Inngest manages the durable agent loop.
+- **Agent Network Architecture:** Configured via `createNetwork` with a single primary coding agent (`name: "nexus"`, model: `gpt-4.1-mini`), a maximum iteration bound (`maxIter: 10`), and an explicit router that loops until the agent generates a text response without accompanying tool calls.
+- **Internal System Boundary:** Tools interact with Convex exclusively via privileged system queries and mutations in `convex/system.ts` validated with `NEXUS_CONVEX_INTERNAL_KEY`.
+- **Live Lifecycle Tracing:** Every tool call and agent iteration dispatches structured events to the `executionEvents` table, enabling real-time streaming progress in the client UI.
+
+---
+
+### B. Agent Tool Registration
+
+All agent tools are instantiated and registered inside [`src/features/conversations/inngest/process-message.ts`](../src/features/conversations/inngest/process-message.ts#L210-L219).
+
+Tools are created using factory functions located in [`src/features/conversations/inngest/tools/`](../src/features/conversations/inngest/tools/). Factory parameters pass required execution context (such as `projectId`, `internalKey`, and the deterministic `context: ToolExecutionContext`) into the tool instance:
+
+```typescript
+// Tool registration in process-message.ts
+tools: [
+  createListFilesTool({ internalKey, projectId, context: toolContext }),
+  createReadFilesTool({ internalKey, context: toolContext }),
+  createUpdateFileTool({ internalKey, context: toolContext }),
+  createCreateFilesTool({ projectId, internalKey, context: toolContext }),
+  createCreateFolderTool({ projectId, internalKey }),
+  createRenameFileTool({ internalKey }),
+  createDeleteFilesTool({ internalKey }),
+  createScrapeUrlsTool(),
+]
+```
+
+#### Inventory of Registered Tools vs. Internal Helpers
+
+| Tool Name | Implementation File | Registered? | Primary Purpose |
+|---|---|:---:|---|
+| `listFiles` | [`tools/list-files.ts`](../src/features/conversations/inngest/tools/list-files.ts) | Yes | Query project hierarchy (names, IDs, types, and parent folder IDs) |
+| `readFiles` | [`tools/read-files.ts`](../src/features/conversations/inngest/tools/read-files.ts) | Yes | Read text content of files by their Convex file IDs |
+| `updateFile` | [`tools/update-file.ts`](../src/features/conversations/inngest/tools/update-file.ts) | Yes | Overwrite text content of an existing file |
+| `createFiles` | [`tools/create-files.ts`](../src/features/conversations/inngest/tools/create-files.ts) | Yes | Batch create one or more files under a shared parent folder |
+| `createFolder` | [`tools/create-folder.ts`](../src/features/conversations/inngest/tools/create-folder.ts) | Yes | Create a new directory folder under a parent folder or at root |
+| `renameFile` | [`tools/rename-file.ts`](../src/features/conversations/inngest/tools/rename-file.ts) | Yes | Rename an existing file or folder document |
+| `deleteFiles` | [`tools/delete-files.ts`](../src/features/conversations/inngest/tools/delete-files.ts) | Yes | Delete one or more files or folders (recursive child deletion) |
+| `scrapeUrls` | [`tools/scrape-urls.ts`](../src/features/conversations/inngest/tools/scrape-urls.ts) | Yes | Fetch markdown content from external URLs via Firecrawl |
+| `runTrackedTool` | [`tools/tracker.ts`](../src/features/conversations/inngest/tools/tracker.ts) | No *(Helper)* | Execution lifecycle wrapper recording Convex `executionEvents` |
+| `ToolExecutionContext` | [`tools/types.ts`](../src/features/conversations/inngest/tools/types.ts) | No *(Type)* | TypeScript context contract passed from `process-message.ts` |
+
+---
+
+### C. Registered Tool Catalog
+
+#### 1. `listFiles`
+- **Source:** [`src/features/conversations/inngest/tools/list-files.ts`](../src/features/conversations/inngest/tools/list-files.ts)
+- **Description:** Lists all file and folder documents belonging to the project. Used by the agent to discover the project structure, locate file IDs, and find folder IDs before creating or modifying items.
+- **Parameters Schema:** `z.object({})` (Takes no input parameters).
+- **Output:** JSON string representing an array of items sorted with folders first, then files alphabetically:
+  ```json
+  [
+    { "id": "k17...", "name": "src", "type": "folder", "parentId": null },
+    { "id": "k18...", "name": "index.ts", "type": "file", "parentId": "k17..." }
+  ]
+  ```
+- **Convex Operations:**
+  - Query: `api.system.getProjectFiles` (reads all files indexed by `by_project`).
+- **Tracking:** Wrapped in `runTrackedTool`. Records tool start and summary with item count.
+
+#### 2. `readFiles`
+- **Source:** [`src/features/conversations/inngest/tools/read-files.ts`](../src/features/conversations/inngest/tools/read-files.ts)
+- **Description:** Reads file contents for specified file IDs.
+- **Parameters Schema:**
+  | Field | Type | Required | Description |
+  |---|---|---|---|
+  | `fileIds` | `string[]` | Yes | Array of Convex file IDs (`min(1)`). |
+- **Output:** JSON string array of objects `{ id, name, content }`.
+- **Convex Operations:**
+  - Query: `api.system.getFileById` for each requested file ID.
+- **Behavior & Errors:**
+  - Validates input format; if none of the provided IDs resolve to files with content, throws `"No files found with provided IDs. Use listFiles to get valid fileIDs."`.
+- **Tracking:** Wrapped in `runTrackedTool`. Tracks resolved file names in `filePaths`.
+
+#### 3. `updateFile`
+- **Source:** [`src/features/conversations/inngest/tools/update-file.ts`](../src/features/conversations/inngest/tools/update-file.ts)
+- **Description:** Updates the text content of a single existing file.
+- **Parameters Schema:**
+  | Field | Type | Required | Description |
+  |---|---|---|---|
+  | `fileId` | `string` | Yes | The ID of the file to update (`min(1)`). |
+  | `content` | `string` | Yes | The complete new text content for the file. |
+- **Output:** Confirmation string: `"File \"<name>\" updated successfully"`.
+- **Convex Operations:**
+  - Query: `api.system.getFileById` (validates file existence and checks `file.type !== "folder"`).
+  - Mutation: `api.system.updateFile` (patches `content` and updates `updatedAt`).
+- **Behavior & Errors:**
+  - Returns explicit error string if ID does not exist or targets a folder.
+- **Tracking:** Wrapped in `runTrackedTool`.
+
+#### 4. `createFiles`
+- **Source:** [`src/features/conversations/inngest/tools/create-files.ts`](../src/features/conversations/inngest/tools/create-files.ts)
+- **Description:** Batch creates multiple files at once sharing the same parent folder. Highly recommended by the agent prompt for efficient multi-file scaffolding.
+- **Parameters Schema:**
+  | Field | Type | Required | Description |
+  |---|---|---|---|
+  | `parentId` | `string` | Yes | ID of parent folder from `listFiles`, or empty string `""` for root level. |
+  | `files` | `Array<{ name: string, content: string }>` | Yes | Array of files (`min(1)`) with non-empty `name` and text `content`. |
+- **Output:** Formatted status message summarizing created and failed files:
+  `Created 2 file(s): App.tsx, styles.css. Failed: index.ts (File already exists in this location)`
+- **Convex Operations:**
+  - Query: `api.system.getFileById` (if `parentId` is non-empty, verifies folder exists and is `type === "folder"`).
+  - Mutation: `api.system.createFiles` (batch inserts documents and checks for sibling collisions).
+- **Behavior & Errors:**
+  - Non-atomic per file: returns partial results array if some files fail (e.g. naming collisions) while others succeed.
+- **Tracking:** Wrapped in `runTrackedTool`. Tracks created file paths in `filePaths`.
+
+#### 5. `createFolder`
+- **Source:** [`src/features/conversations/inngest/tools/create-folder.ts`](../src/features/conversations/inngest/tools/create-folder.ts)
+- **Description:** Creates a new folder document under a parent folder or at root level.
+- **Parameters Schema:**
+  | Field | Type | Required | Description |
+  |---|---|---|---|
+  | `name` | `string` | Yes | Name of the folder to create (`min(1)`). |
+  | `parentId` | `string` | Yes | ID of the parent folder from `listFiles`, or empty string `""` for root. |
+- **Output:** Success message: `"Folder created with ID: <id>"`.
+- **Convex Operations:**
+  - Query: `api.system.getFileById` (validates `parentId` if non-empty).
+  - Mutation: `api.system.createFolder` (checks sibling collisions by `by_project_parent` index, inserts folder record).
+- **Tracking:** Executes directly via `toolStep?.run("create-folder")` without `runTrackedTool`.
+
+#### 6. `renameFile`
+- **Source:** [`src/features/conversations/inngest/tools/rename-file.ts`](../src/features/conversations/inngest/tools/rename-file.ts)
+- **Description:** Renames an existing file or folder document.
+- **Parameters Schema:**
+  | Field | Type | Required | Description |
+  |---|---|---|---|
+  | `fileId` | `string` | Yes | ID of file or folder to rename (`min(1)`). |
+  | `newName` | `string` | Yes | The new name (`min(1)`). |
+- **Output:** Success message: `"Renamed \"<oldName>\" to \"<newName>\" successfully"`.
+- **Convex Operations:**
+  - Query: `api.system.getFileById` (validates existence).
+  - Mutation: `api.system.renameFile` (validates sibling collisions, patches `name` and `updatedAt`).
+- **Tracking:** Executes via `toolStep?.run("rename-file")` without `runTrackedTool`.
+
+#### 7. `deleteFiles`
+- **Source:** [`src/features/conversations/inngest/tools/delete-files.ts`](../src/features/conversations/inngest/tools/delete-files.ts)
+- **Description:** Deletes files or folders from the project. Deleting a folder recursively removes all nested descendants.
+- **Parameters Schema:**
+  | Field | Type | Required | Description |
+  |---|---|---|---|
+  | `fileIds` | `string[]` | Yes | Array of file or folder IDs to delete (`min(1)`). |
+- **Output:** Multi-line string summarizing deleted items:
+  `Deleted folder "components" successfully\nDeleted file "utils.ts" successfully`
+- **Convex Operations:**
+  - Query: `api.system.getFileById` for each ID prior to execution.
+  - Mutation: `api.system.deleteFile` (executed per item; performs recursive descendant deletion and removes associated storage files).
+- **Tracking:** Executes via `toolStep?.run("delete-files")` without `runTrackedTool`.
+
+#### 8. `scrapeUrls`
+- **Source:** [`src/features/conversations/inngest/tools/scrape-urls.ts`](../src/features/conversations/inngest/tools/scrape-urls.ts)
+- **Description:** Scrapes external documentation or web pages using the Firecrawl API (`@/lib/firecrawl`) and returns markdown content.
+- **Parameters Schema:**
+  | Field | Type | Required | Description |
+  |---|---|---|---|
+  | `urls` | `string[]` | Yes | Array of valid URL strings (`min(1)`). |
+- **Output:** JSON string array of scraped results: `[{ "url": "https://...", "content": "# Markdown content..." }]`.
+- **Convex Operations:** None (External API call).
+- **Behavior & Errors:**
+  - Individual URL failures do not abort the entire tool; failed URLs append `{ url, content: "Failed to scrape URL: <url>" }`.
+- **Tracking:** Executes via `toolStep?.run("scrape-urls")` without `runTrackedTool`.
+
+---
+
+### D. Tool Input and Output Conventions
+
+1. **Validation Layer:** Every tool validates its inputs twice:
+   - First via the Inngest Agent Kit parameters definition (`parameters: z.object(...)`) for OpenAI tool-calling schema generation.
+   - Second via an internal `paramsSchema.safeParse(params)` guard inside the handler. If validation fails, the tool immediately returns `"Error: <message>"` without invoking backend mutations.
+2. **Identifier Conventions:**
+   - File and folder identifiers are string representations of Convex document IDs (`Id<"files">`).
+   - Root-level indicators: `parentId: ""` (empty string) designates the project root.
+3. **Graceful Error Returns:** Tool handlers catch expected errors and return descriptive string messages (e.g. `"Error creating files: ..."` or `"Error: File with ID '...' not found"`). This enables the LLM agent to inspect the error, adjust its parameters, and retry in a subsequent iteration.
+
+---
+
+### E. Convex Side Effects and Authorization Boundaries
+
+#### Internal Key Validation (`NEXUS_CONVEX_INTERNAL_KEY`)
+All Convex functions called by Inngest agent tools reside in [`convex/system.ts`](../convex/system.ts). Every system query and mutation begins by executing `validateInternalKey`:
+
+```typescript
+const validateInternalKey = (key: string) => {
+  const internalKey = process.env.NEXUS_CONVEX_INTERNAL_KEY;
+  if (!internalKey) throw new Error("NEXUS_CONVEX_INTERNAL_KEY is not configured");
+  if (key !== internalKey) throw new Error("Invalid internal key");
+};
+```
+
+#### Authorization & Boundary Rules
+- **No Direct User Access:** System mutations accept `internalKey: v.string()` rather than a Clerk auth token (`ctx.auth`).
+- **Initial Verification at Entry:** When a user initiates a conversation via `/api/messages`, Next.js verifies Clerk user authentication (`auth()`), checks that the project is owned by the user (`project.ownerId === userId`), and dispatches the event.
+- **Contributor Safety Constraint:** Contributors must **never** expose functions from `convex/system.ts` directly to client components. Client components must only call public Convex endpoints in `convex/files.ts`, `convex/projects.ts`, etc., which enforce Clerk user identity and resource ownership.
+
+#### Backend Mutation Mapping
+
+| Tool | Convex Function | Type | Sibling Collision Check? | Cascade / Recursive Effects |
+|---|---|---|:---:|---|
+| `listFiles` | `api.system.getProjectFiles` | Query | N/A | None |
+| `readFiles` | `api.system.getFileById` | Query | N/A | None |
+| `updateFile` | `api.system.updateFile` | Mutation | N/A | Updates `updatedAt` |
+| `createFiles` | `api.system.createFiles` | Mutation | Yes (`by_project_parent`) | Sibling collision skips individual file |
+| `createFolder` | `api.system.createFolder` | Mutation | Yes (`by_project_parent`) | Throws if sibling name collision exists |
+| `renameFile` | `api.system.renameFile` | Mutation | Yes (`by_project_parent`) | Updates `updatedAt` |
+| `deleteFiles` | `api.system.deleteFile` | Mutation | N/A | **Recursive:** Deletes all nested children and removes storage blobs |
+
+---
+
+### F. Execution Tracking
+
+Nexus records rich execution tracking data in the `executionEvents` table to give users visibility into background agent operations.
+
+#### Tracking Architecture (`runTrackedTool`)
+Tools wrapped with [`runTrackedTool`](../src/features/conversations/inngest/tools/tracker.ts) automatically emit lifecycle events:
+1. **Tool Start (`tool_start`):** Emitted before tool logic begins, setting status to `"running"`.
+2. **Tool Complete (`tool_complete`):** Emitted upon successful return, updating status to `"completed"` with a human-readable `summary` and optional `filePaths`.
+3. **Tool Fail (`tool_fail`):** Emitted if execution throws an unhandled error, capturing `error` details.
+
+#### Deterministic ID Generation
+To remain stable across Inngest step retries and prevent duplicate event insertion:
+```typescript
+const toolExecutionId = `${context.executionId}-iter${iteration}-${options.toolName}-${callIndex}`;
+```
+- `executionId`: Derived deterministically as `exec-${messageId}`.
+- `iteration`: Current agent reasoning iteration (from `network.state.results.length + 1`).
+- `callIndex`: Zero-based index tracking multiple calls to the same tool within a single iteration.
+
+#### `executionEvents` Schema Fields ([`convex/schema.ts`](../convex/schema.ts#L108-L135))
+
+| Field | Type | Description |
+|---|---|---|
+| `conversationId` | `Id<"conversations">` | Parent conversation reference. |
+| `projectId` | `Id<"projects">` | Parent project reference. |
+| `messageId` | `Id<"messages">` | Active assistant message document. |
+| `executionId` | `string` | Unique execution run identifier (`exec-<messageId>`). |
+| `iteration` | `number` | Agent loop iteration count. |
+| `eventType` | `union` | `"execution_start"`, `"execution_complete"`, `"execution_cancel"`, `"execution_fail"`, `"tool_start"`, `"tool_complete"`, `"tool_fail"`. |
+| `toolExecutionId` | `optional(string)` | Deterministic tool execution identifier. |
+| `toolName` | `optional(string)` | Name of the invoked tool (e.g. `"createFiles"`). |
+| `description` | `optional(string)` | Human-readable action description. |
+| `filePaths` | `optional(string[])` | Array of file paths/names touched by the tool. |
+| `status` | `union` | `"running"`, `"completed"`, `"failed"`, `"cancelled"`. |
+| `summary` | `optional(string)` | Summary of output or result status. |
+| `error` | `optional(string)` | Error description if status is `"failed"` or `"cancelled"`. |
+| `startedAt` | `optional(number)` | Epoch millisecond start timestamp. |
+| `completedAt` | `optional(number)` | Epoch millisecond completion timestamp. |
+
+> **Note on Tracking Adoption:** Currently, `listFiles`, `readFiles`, `updateFile`, and `createFiles` are wrapped with `runTrackedTool`. `createFolder`, `renameFile`, `deleteFiles`, and `scrapeUrls` execute within standard Inngest `toolStep.run` steps without emitting `executionEvents`. Contributors adding or refactoring tools should wire `context: ToolExecutionContext` and `runTrackedTool` for uniform progress tracking.
+
+---
+
+### G. Retry and Idempotency Conventions
+
+1. **Inngest Function-Level Retries:**
+   - Functions default to standard Inngest serverless retry policies (up to 4 attempts with exponential backoff).
+   - Permanent errors (such as missing `NEXUS_CONVEX_INTERNAL_KEY` or nonexistent conversation) throw `NonRetriableError` to halt retries immediately.
+2. **Step-Level Memoization (`step.run`):**
+   - Individual steps (e.g. `step.run("get-conversation")`, `step.run("update-assistant-message")`) cache their results in Inngest state. If an execution fails late in the workflow, completed steps are not re-executed.
+3. **Mutation Idempotency Guards:**
+   - `recordExecutionStart` and `recordToolStart` query existing records by index (`by_execution` and `by_tool_execution`) before inserting. If an event with the matching deterministic ID exists, the existing document ID is returned without duplicate creation.
+   - Non-idempotent operations: Tool-level mutations (`createFiles`, `createFolder`, `renameFile`) check for sibling name collisions at execution time. If an Inngest retry re-runs an unmemoized file creation, the mutation will reject duplicate file names with `"An item with this name already exists in this location"`.
+
+---
+
+### H. Cancellation and Stale Execution Handling
+
+1. **Cancellation Trigger:**
+   - When a user sends a new message or clicks **Cancel**, `POST /api/messages/cancel` or `POST /api/messages` dispatches a `message/cancel` event to Inngest with `{ messageId, projectId }`.
+2. **Inngest Cancellation Matcher:**
+   - `processMessage` declares:
+     ```typescript
+     cancelOn: [
+       {
+         event: "message/cancel",
+         if: "event.data.messageId == async.data.messageId",
+       },
+     ]
+     ```
+   - When matched, Inngest immediately terminates the workflow run.
+3. **Terminal State Guards in Convex:**
+   - When cancelled, `/api/messages/cancel` sets message status to `"cancelled"` and marks active `executionEvents` as cancelled.
+   - Convex system mutations (`updateMessageContent`, `recordToolStart`, `recordToolComplete`, `recordExecutionEnd`) explicitly check:
+     ```typescript
+     if (message.status === "cancelled") return;
+     ```
+   - This ensures that if a background tool completes concurrently or an in-flight network request finishes after cancellation, stale completions cannot overwrite the terminal `"cancelled"` state.
+
+---
+
+### I. Contributor Checklist: Adding a New Agent Tool
+
+When introducing a new agent tool to Nexus, follow this checklist:
+
+1. **Create Tool Module:** Add `src/features/conversations/inngest/tools/<tool-name>.ts`.
+2. **Define Schemas:**
+   - Create a Zod parameter schema for Inngest Agent Kit.
+   - Define internal validation with `.safeParse()`.
+3. **Wire Execution Context:**
+   - Accept `internalKey`, `projectId`, and optional `context?: ToolExecutionContext` in the factory options.
+4. **Wrap with Tracking:**
+   - Wrap tool logic with `runTrackedTool(context, { toolName, description, filePaths }, ...)` to emit start and completion events.
+5. **Use System Convex APIs:**
+   - Create or call internal mutations in `convex/system.ts` validated with `validateInternalKey(args.internalKey)`.
+   - Never expose internal system mutations as client-accessible endpoints.
+6. **Graceful Error Handling:**
+   - Catch predictable operational errors and return formatted error strings to the LLM rather than crashing the workflow.
+7. **Register in `process-message.ts`:**
+   - Import the tool factory and instantiate it in `codingAgent`'s `tools` array.
+8. **Update System Prompt:**
+   - If the tool requires specific usage sequencing (e.g. like `listFiles` before creating files), update `CODING_AGENT_SYSTEM_PROMPT` in `constants.ts`.
+9. **Add Unit Tests:**
+   - Add unit tests under `tests/unit/` testing parameter validation, output parsing, and error branches.
+10. **Update Documentation:**
+    - Update this architecture guide with the new tool's schema, Convex side effects, and tracking behavior.
+
+---
+
+### J. Source References
+
+- **Agent Function:** [`src/features/conversations/inngest/process-message.ts`](../src/features/conversations/inngest/process-message.ts)
+- **Agent Prompts & Constants:** [`src/features/conversations/inngest/constants.ts`](../src/features/conversations/inngest/constants.ts)
+- **Tracking Helper:** [`src/features/conversations/inngest/tools/tracker.ts`](../src/features/conversations/inngest/tools/tracker.ts)
+- **Tool Types:** [`src/features/conversations/inngest/tools/types.ts`](../src/features/conversations/inngest/tools/types.ts)
+- **Tool Implementations:**
+  - [`tools/create-files.ts`](../src/features/conversations/inngest/tools/create-files.ts)
+  - [`tools/create-folder.ts`](../src/features/conversations/inngest/tools/create-folder.ts)
+  - [`tools/delete-files.ts`](../src/features/conversations/inngest/tools/delete-files.ts)
+  - [`tools/list-files.ts`](../src/features/conversations/inngest/tools/list-files.ts)
+  - [`tools/read-files.ts`](../src/features/conversations/inngest/tools/read-files.ts)
+  - [`tools/rename-file.ts`](../src/features/conversations/inngest/tools/rename-file.ts)
+  - [`tools/scrape-urls.ts`](../src/features/conversations/inngest/tools/scrape-urls.ts)
+  - [`tools/update-file.ts`](../src/features/conversations/inngest/tools/update-file.ts)
+- **Convex System Operations:** [`convex/system.ts`](../convex/system.ts)
+- **Convex Schema:** [`convex/schema.ts`](../convex/schema.ts)
+- **Message API Routes:**
+  - [`src/app/api/messages/route.ts`](../src/app/api/messages/route.ts)
+  - [`src/app/api/messages/cancel/route.ts`](../src/app/api/messages/cancel/route.ts)
