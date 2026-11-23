@@ -26,6 +26,10 @@ export const useRenameConversation = () => {
   return useMutation(api.conversations.rename);
 };
 
+export const useDeleteConversation = () => {
+  return useMutation(api.conversations.deleteConversation);
+};
+
 export const useExecutionEvents = (
   conversationId: Id<"conversations"> | null,
 ) => {

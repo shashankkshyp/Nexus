@@ -166,3 +166,55 @@ export const rename = mutation({
     return args.conversationId;
   },
 });
+
+export const deleteConversation = mutation({
+  args: {
+    conversationId: v.id("conversations"),
+  },
+  handler: async (ctx, args) => {
+    const identity = await verifyAuth(ctx);
+
+    const conversation = await ctx.db.get("conversations", args.conversationId);
+    if (!conversation) {
+      throw new Error("Conversation not found");
+    }
+
+    const project = await ctx.db.get("projects", conversation.projectId);
+    if (!project) {
+      throw new Error("Project not found");
+    }
+
+    if (project.ownerId !== identity.subject) {
+      throw new Error("Unauthorized to access this project");
+    }
+
+    // 1. Delete associated execution events for this conversation
+    const events = await ctx.db
+      .query("executionEvents")
+      .withIndex("by_conversation", (q) =>
+        q.eq("conversationId", args.conversationId),
+      )
+      .collect();
+
+    for (const event of events) {
+      await ctx.db.delete("executionEvents", event._id);
+    }
+
+    // 2. Delete associated messages for this conversation
+    const messages = await ctx.db
+      .query("messages")
+      .withIndex("by_conversation", (q) =>
+        q.eq("conversationId", args.conversationId),
+      )
+      .collect();
+
+    for (const message of messages) {
+      await ctx.db.delete("messages", message._id);
+    }
+
+    // 3. Delete the conversation document
+    await ctx.db.delete("conversations", args.conversationId);
+
+    return { success: true };
+  },
+});
