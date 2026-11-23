@@ -61,6 +61,9 @@ export const ExportPopover = ({ projectId }: ExportPopoverProps) => {
   const exportStatus = project?.exportStatus;
   const exportRepoUrl = project?.exportRepoUrl;
 
+  const isRepoNameManuallyEditedRef = React.useRef(false);
+  const previousSyncedDefaultRef = React.useRef<string | null>(null);
+
   const form = useForm({
     defaultValues: {
       repoName: project?.name?.replace(/[^a-zA-Z0-9._-]/g, "-") ?? "",
@@ -101,6 +104,21 @@ export const ExportPopover = ({ projectId }: ExportPopoverProps) => {
       }
     },
   });
+
+  // Synchronize repository name default when project data becomes available or changes,
+  // provided the user has not manually edited the field.
+  React.useEffect(() => {
+    if (project?.name !== undefined && project?.name !== null) {
+      const sanitizedName = project.name.replace(/[^a-zA-Z0-9._-]/g, "-");
+
+      if (!isRepoNameManuallyEditedRef.current) {
+        if (sanitizedName !== previousSyncedDefaultRef.current) {
+          previousSyncedDefaultRef.current = sanitizedName;
+          form.setFieldValue("repoName", sanitizedName);
+        }
+      }
+    }
+  }, [project?.name, form]);
 
   const handleCancelExport = async () => {
     await ky.post("/api/github/export/cancel", {
@@ -236,7 +254,10 @@ export const ExportPopover = ({ projectId }: ExportPopoverProps) => {
                     name={field.name}
                     value={field.state.value}
                     onBlur={field.handleBlur}
-                    onChange={(e) => field.handleChange(e.target.value)}
+                    onChange={(e) => {
+                      isRepoNameManuallyEditedRef.current = true;
+                      field.handleChange(e.target.value);
+                    }}
                     aria-invalid={isInvalid}
                     placeholder="my-project"
                   />
@@ -267,7 +288,7 @@ export const ExportPopover = ({ projectId }: ExportPopoverProps) => {
                       <SelectItem value="public">Public</SelectItem>
                     </SelectContent>
                   </Select>
-            
+
                 </Field>
               );
             }}

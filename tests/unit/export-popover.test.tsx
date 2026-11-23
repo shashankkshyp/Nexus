@@ -535,4 +535,169 @@ describe("ExportPopover - Issue #85: Persisted export failure details in retry U
       expect(trigger?.querySelector("svg")).toBeDefined();
     });
   });
+
+  describe("Issue #89: Synchronize Repository-Name Default After Project Loads", () => {
+    it("A. synchronizes repository-name field when project loads asynchronously from undefined", () => {
+      // 1. Initial render with undefined project data
+      currentProjectMock = null;
+
+      const { rerender } = render(<ExportPopover projectId={PROJECT_ID} />);
+      openPopover();
+
+      const input = screen.getByLabelText("Repository Name") as HTMLInputElement;
+      expect(input.value).toBe("");
+
+      // 2. Project data arrives from Convex
+      currentProjectMock = {
+        _id: PROJECT_ID,
+        name: "My Nexus App",
+      };
+
+      rerender(<ExportPopover projectId={PROJECT_ID} />);
+
+      expect(input.value).toBe("My-Nexus-App");
+    });
+
+    it("B. preserves manually edited repository name when project updates", () => {
+      currentProjectMock = {
+        _id: PROJECT_ID,
+        name: "Nexus",
+      };
+
+      const { rerender } = render(<ExportPopover projectId={PROJECT_ID} />);
+      openPopover();
+
+      const input = screen.getByLabelText("Repository Name") as HTMLInputElement;
+      expect(input.value).toBe("Nexus");
+
+      // User manually edits the field
+      fireEvent.change(input, { target: { value: "my-custom-repository" } });
+      expect(input.value).toBe("my-custom-repository");
+
+      // Project name updates from backend
+      currentProjectMock = {
+        _id: PROJECT_ID,
+        name: "Nexus Updated",
+      };
+
+      rerender(<ExportPopover projectId={PROJECT_ID} />);
+
+      // Must preserve user-entered custom repository name
+      expect(input.value).toBe("my-custom-repository");
+    });
+
+    it("C. synchronizes repository-name when project name changes before user editing", () => {
+      currentProjectMock = {
+        _id: PROJECT_ID,
+        name: "Nexus",
+      };
+
+      const { rerender } = render(<ExportPopover projectId={PROJECT_ID} />);
+      openPopover();
+
+      const input = screen.getByLabelText("Repository Name") as HTMLInputElement;
+      expect(input.value).toBe("Nexus");
+
+      // Project name changes while untouched
+      currentProjectMock = {
+        _id: PROJECT_ID,
+        name: "Nexus App",
+      };
+
+      rerender(<ExportPopover projectId={PROJECT_ID} />);
+
+      expect(input.value).toBe("Nexus-App");
+    });
+
+    it("D. preserves user edits made before project data arrives", () => {
+      // 1. Mount with undefined project
+      currentProjectMock = null;
+
+      const { rerender } = render(<ExportPopover projectId={PROJECT_ID} />);
+      openPopover();
+
+      const input = screen.getByLabelText("Repository Name") as HTMLInputElement;
+      expect(input.value).toBe("");
+
+      // User types before project data finishes loading
+      fireEvent.change(input, { target: { value: "my-repository" } });
+      expect(input.value).toBe("my-repository");
+
+      // Project data arrives later
+      currentProjectMock = {
+        _id: PROJECT_ID,
+        name: "Nexus App",
+      };
+
+      rerender(<ExportPopover projectId={PROJECT_ID} />);
+
+      // User's edit must not be overwritten
+      expect(input.value).toBe("my-repository");
+    });
+
+    it("E. sanitizes special characters matching regex replacement", () => {
+      currentProjectMock = null;
+
+      const { rerender } = render(<ExportPopover projectId={PROJECT_ID} />);
+      openPopover();
+
+      const input = screen.getByLabelText("Repository Name") as HTMLInputElement;
+
+      currentProjectMock = {
+        _id: PROJECT_ID,
+        name: "my nexus/app!@#",
+      };
+
+      rerender(<ExportPopover projectId={PROJECT_ID} />);
+
+      expect(input.value).toBe("my-nexus-app---");
+    });
+
+    it("F. receiving the same project name does not overwrite user edits or cause unnecessary changes", () => {
+      currentProjectMock = {
+        _id: PROJECT_ID,
+        name: "Nexus App",
+      };
+
+      const { rerender } = render(<ExportPopover projectId={PROJECT_ID} />);
+      openPopover();
+
+      const input = screen.getByLabelText("Repository Name") as HTMLInputElement;
+      expect(input.value).toBe("Nexus-App");
+
+      fireEvent.change(input, { target: { value: "user-chosen-name" } });
+
+      // Rerender with the exact same project name
+      currentProjectMock = {
+        _id: PROJECT_ID,
+        name: "Nexus App",
+      };
+
+      rerender(<ExportPopover projectId={PROJECT_ID} />);
+      expect(input.value).toBe("user-chosen-name");
+    });
+
+    it("G. preserves other form fields (visibility, description) during default synchronization", () => {
+      currentProjectMock = null;
+
+      const { rerender } = render(<ExportPopover projectId={PROJECT_ID} />);
+      openPopover();
+
+      const descriptionInput = screen.getByLabelText("Description") as HTMLTextAreaElement;
+      fireEvent.change(descriptionInput, { target: { value: "My awesome description" } });
+      expect(descriptionInput.value).toBe("My awesome description");
+
+      // Project data loads
+      currentProjectMock = {
+        _id: PROJECT_ID,
+        name: "Sample Project",
+      };
+
+      rerender(<ExportPopover projectId={PROJECT_ID} />);
+
+      const repoInput = screen.getByLabelText("Repository Name") as HTMLInputElement;
+      expect(repoInput.value).toBe("Sample-Project");
+      expect(descriptionInput.value).toBe("My awesome description");
+    });
+  });
 });
