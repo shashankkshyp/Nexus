@@ -140,6 +140,85 @@ npm run build
 
 ---
 
+## 💻 Adding or Updating Editor Language Support
+
+Nexus uses CodeMirror 6 for syntax highlighting in the central code editor. Language extensions are dynamically selected based on the active file name. Contributors looking to add a new language mode or update existing extension mappings should follow this workflow:
+
+### 1. Locate the Central Extension Mapping
+The mapping from file extensions to CodeMirror language packages is isolated in a single file:
+- [`src/features/editor/extensions/language-extension.ts`](src/features/editor/extensions/language-extension.ts)
+
+This file exports `getLanguageExtension(filename: string): Extension`, which inspects the filename and returns the appropriate CodeMirror language extension (or an empty array `[]` as fallback).
+
+### 2. Check and Add Language Package Dependencies
+Before adding a mapping, check [`package.json`](package.json) under `dependencies` to see if the required `@codemirror/lang-*` package is already installed.
+- Currently bundled language packages include:
+  - `@codemirror/lang-javascript` (handles JS, JSX, TS, TSX)
+  - `@codemirror/lang-html`
+  - `@codemirror/lang-css`
+  - `@codemirror/lang-json`
+  - `@codemirror/lang-markdown` (handles Markdown and MDX)
+  - `@codemirror/lang-python`
+- If the language requires a package not yet installed, install it using `npm`:
+  ```bash
+  npm install @codemirror/lang-<language>
+  ```
+  Only add a new dependency if an existing package does not already cover the syntax.
+
+### 3. Update the Mapping
+In `src/features/editor/extensions/language-extension.ts`:
+1. Import the language function from `@codemirror/lang-<language>`.
+2. Add a `case` to the `switch (ext)` statement returning the initialized extension.
+
+Example:
+```typescript
+import { rust } from "@codemirror/lang-rust";
+
+// Inside getLanguageExtension:
+case "rs":
+  return rust();
+```
+
+### 4. Understand Editor Integration Boundaries
+- [`src/features/editor/extensions/language-extension.ts`](src/features/editor/extensions/language-extension.ts): Pure utility mapping filename extensions to language extensions. **This is the primary file contributors should edit.**
+- [`src/features/editor/components/code-editor.tsx`](src/features/editor/components/code-editor.tsx): Consumes `getLanguageExtension(fileName)` via `useMemo` and passes the resulting extension to `new EditorView({ ... })`. It should generally remain unchanged when adding language support.
+- [`src/features/editor/extensions/custom-setup.ts`](src/features/editor/extensions/custom-setup.ts): Configures shared editor capabilities (line numbers, fold gutters, bracket matching, history, autocompletion keymaps). Adding a language mapping should **not** modify shared editor setup.
+
+### 5. Filename Edge Cases & Fallback Behavior
+The extraction logic uses:
+```typescript
+const ext = filename.split(".").pop()?.toLowerCase();
+```
+Contributors must account for how this extraction behaves:
+- **Case-Insensitive Normalization:** `.toLowerCase()` ensures uppercase or mixed-case extensions (such as `main.JS` or `index.TS`) match standard lowercase switch cases.
+- **Compound Extensions:** Filenames with compound extensions (such as `archive.tar.gz`) resolve to their trailing segment (e.g. `gz`). If an extension is not matched, it reaches `default`.
+- **Missing or Unsupported Extensions:** Filenames without extensions (such as `Dockerfile` or `plain-text`) or unknown extensions return an empty array `[]` in the `default` branch. CodeMirror treats an empty array `[]` as a no-op extension, allowing plain text editing without syntax errors.
+
+### 6. Language-Specific Configuration Options
+Certain CodeMirror language packages accept configuration flags. For example, `@codemirror/lang-javascript` supports JSX and TypeScript parser modes:
+- `.js` -> `javascript()`
+- `.jsx` -> `javascript({ jsx: true })`
+- `.ts` -> `javascript({ typescript: true })`
+- `.tsx` -> `javascript({ typescript: true, jsx: true })`
+
+When adding or updating language extensions, pass only configuration options officially supported by that `@codemirror/lang-*` package.
+
+### 7. Add or Update Unit Tests
+Whenever you add or update language mappings, update the unit test suite:
+- [`tests/unit/language-extension.test.ts`](tests/unit/language-extension.test.ts)
+
+Ensure test cases cover:
+- Successful extension resolution for the new language.
+- Uppercase/case-insensitive extension handling.
+- Unsupported/fallback behavior where applicable.
+
+Run the focused test command:
+```bash
+npx vitest run tests/unit/language-extension.test.ts
+```
+
+---
+
 ## 📬 Pull Request Process
 
 1. **Push your branch to your fork:**
