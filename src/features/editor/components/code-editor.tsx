@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from "react"
 import { EditorView, keymap } from "@codemirror/view";
+import { Compartment } from "@codemirror/state";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { indentWithTab } from "@codemirror/commands";
 import { indentationMarkers } from "@replit/codemirror-indentation-markers";
@@ -20,6 +21,7 @@ interface Props {
   fileName: string;
   filePath?: string;
   initialValue?: string;
+  lineWrapping?: boolean;
   onChange: (value: string) => void;
   onSave?: () => void;
   conversationId?: Id<"conversations">;
@@ -32,12 +34,14 @@ export const CodeEditor = (props: Props) => {
   const fileName = props.fileName;
   const filePath = props.filePath;
   const initialValue = props.initialValue ?? "";
+  const lineWrapping = props.lineWrapping ?? false;
   const onChange = props.onChange;
   const onSave = props.onSave;
   const conversationId = props.conversationId;
   const onSelectedCode = props.onSelectedCode;
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const wrapCompartmentRef = useRef<Compartment | null>(null);
   const onSaveRef = useRef(onSave);
   const onSelectedCodeRef = useRef(onSelectedCode);
   const conversationIdRef = useRef(conversationId);
@@ -70,8 +74,24 @@ export const CodeEditor = (props: Props) => {
     }
   }, [initialValue]);
 
+  // Reconfigure line wrapping compartment when lineWrapping prop changes
+  useEffect(() => {
+    const view = viewRef.current;
+    const compartment = wrapCompartmentRef.current;
+    if (view && compartment) {
+      view.dispatch({
+        effects: compartment.reconfigure(
+          lineWrapping ? EditorView.lineWrapping : []
+        ),
+      });
+    }
+  }, [lineWrapping]);
+
   useEffect(() => {
     if (!editorRef.current) return;
+
+    const wrapCompartment = new Compartment();
+    wrapCompartmentRef.current = wrapCompartment;
 
     const saveKeymap = keymap.of([
       {
@@ -91,6 +111,7 @@ export const CodeEditor = (props: Props) => {
       doc: initialValue,
       parent: editorRef.current,
       extensions: [
+        wrapCompartment.of(lineWrapping ? EditorView.lineWrapping : []),
         saveKeymap,
         oneDark,
         customTheme,
@@ -123,8 +144,9 @@ export const CodeEditor = (props: Props) => {
 
     return () => {
       view.destroy();
+      wrapCompartmentRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- initialValue is only used for initial document
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- initialValue and initial lineWrapping are only used for initial setup
   }, [languageExtension]);
 
   return (
