@@ -16,15 +16,21 @@ vi.mock("@/features/editor/components/file-breadcrumbs", () => ({
 vi.mock("@/features/editor/components/code-editor", () => ({
   CodeEditor: ({
     fileName,
+    lineWrapping,
     onChange,
     onSave,
   }: {
     fileName: string;
     initialValue?: string;
+    lineWrapping?: boolean;
     onChange: (value: string) => void;
     onSave?: () => void;
   }) => (
-    <div data-testid="mock-code-editor" data-filename={fileName}>
+    <div
+      data-testid="mock-code-editor"
+      data-filename={fileName}
+      data-linewrapping={lineWrapping ? "true" : "false"}
+    >
       <input
         data-testid="editor-input"
         onChange={(e) => onChange(e.target.value)}
@@ -668,7 +674,7 @@ describe("EditorView - Visible Save Control in Status Bar (Issue #77)", () => {
 });
 
 import { EditorView as CMEditorView } from "@codemirror/view";
-import { EditorState as CMEditorState } from "@codemirror/state";
+import { EditorState as CMEditorState, Compartment } from "@codemirror/state";
 import { suggestion } from "@/features/editor/extensions/suggestion";
 import { quickEdit, showQuickEditEffect, quickEditState } from "@/features/editor/extensions/quick-edit";
 import * as suggestionFetcherModule from "@/features/editor/extensions/suggestion/fetcher";
@@ -972,6 +978,174 @@ describe("CodeMirror Extensions - Tab AI State Isolation (Issue #66)", () => {
 
       viewA.destroy();
       containerA.remove();
+    });
+  });
+
+  describe("Dynamic Line Wrapping (Issue #98)", () => {
+    const projectId = "proj_1" as Id<"projects">;
+    const fileA = "file_a" as Id<"files">;
+    const fileB = "file_b" as Id<"files">;
+
+    beforeEach(() => {
+      useEditorStore.setState({ tabs: new Map() });
+      const store = useEditorStore.getState();
+      store.openFile(projectId, fileA, { pinned: true, initialContent: "line 1\nvery long line that extends beyond editor width", updatedAt: 100 });
+      store.openFile(projectId, fileB, { pinned: true, initialContent: "initial file B content", updatedAt: 100 });
+      store.setActiveTab(projectId, fileA);
+    });
+
+    // A. Default behavior
+    it("A. has line wrapping disabled by default in EditorView and passes false to CodeEditor", () => {
+      render(<EditorView projectId={projectId} />);
+
+      const toggleBtn = screen.getByRole("button", { name: "Line wrapping" });
+      expect(toggleBtn).toBeDefined();
+      expect(toggleBtn.getAttribute("aria-pressed")).toBe("false");
+      expect(toggleBtn.getAttribute("title")).toBe("Enable line wrapping");
+
+      const editor = screen.getByTestId("mock-code-editor");
+      expect(editor.getAttribute("data-linewrapping")).toBe("false");
+    });
+
+    // B. Accessible control
+    it("B. renders accessible toggle control that updates aria-pressed and title on click and keyboard interaction", () => {
+      render(<EditorView projectId={projectId} />);
+
+      const toggleBtn = screen.getByRole("button", { name: "Line wrapping" });
+      expect(toggleBtn.getAttribute("aria-pressed")).toBe("false");
+
+      // Click to toggle on
+      act(() => {
+        fireEvent.click(toggleBtn);
+      });
+      expect(toggleBtn.getAttribute("aria-pressed")).toBe("true");
+      expect(toggleBtn.getAttribute("title")).toBe("Disable line wrapping");
+      expect(screen.getByTestId("mock-code-editor").getAttribute("data-linewrapping")).toBe("true");
+
+      // Keyboard activation (Space or Enter on button triggers click event)
+      act(() => {
+        fireEvent.keyDown(toggleBtn, { key: " ", code: "Space" });
+        fireEvent.click(toggleBtn);
+      });
+      expect(toggleBtn.getAttribute("aria-pressed")).toBe("false");
+      expect(toggleBtn.getAttribute("title")).toBe("Enable line wrapping");
+      expect(screen.getByTestId("mock-code-editor").getAttribute("data-linewrapping")).toBe("false");
+    });
+
+    // C. File switching preserves wrapping preference
+    it("C. preserves line wrapping preference across file switches within the mounted editor view", () => {
+      const { rerender } = render(<EditorView projectId={projectId} />);
+
+      const toggleBtn = screen.getByRole("button", { name: "Line wrapping" });
+
+      // Step 1: User opens file A, enables wrapping
+      act(() => {
+        fireEvent.click(toggleBtn);
+      });
+      expect(toggleBtn.getAttribute("aria-pressed")).toBe("true");
+      expect(screen.getByTestId("mock-code-editor").getAttribute("data-filename")).toBe("FileA.tsx");
+      expect(screen.getByTestId("mock-code-editor").getAttribute("data-linewrapping")).toBe("true");
+
+      // Step 2: User switches to file B
+      act(() => {
+        useEditorStore.getState().setActiveTab(projectId, fileB);
+      });
+      rerender(<EditorView projectId={projectId} />);
+
+      // Verify wrapping is still enabled for file B
+      expect(screen.getByTestId("mock-code-editor").getAttribute("data-filename")).toBe("FileB.tsx");
+      expect(screen.getByTestId("mock-code-editor").getAttribute("data-linewrapping")).toBe("true");
+      expect(screen.getByRole("button", { name: "Line wrapping" }).getAttribute("aria-pressed")).toBe("true");
+
+      // Step 3: User returns to file A
+      act(() => {
+        useEditorStore.getState().setActiveTab(projectId, fileA);
+      });
+      rerender(<EditorView projectId={projectId} />);
+
+      // Verify wrapping remains enabled when returning to file A
+      expect(screen.getByTestId("mock-code-editor").getAttribute("data-filename")).toBe("FileA.tsx");
+      expect(screen.getByTestId("mock-code-editor").getAttribute("data-linewrapping")).toBe("true");
+      expect(screen.getByRole("button", { name: "Line wrapping" }).getAttribute("aria-pressed")).toBe("true");
+    });
+
+    // D. Dynamic CodeMirror Compartment reconfiguration without recreation or state loss
+    it("D. reconfigures line wrapping dynamically using a Compartment without recreating EditorView or losing document/cursor/selection", () => {
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+
+      const wrapCompartment = new Compartment();
+      const initialDoc = "const message = 'A very long string that should demonstrate line wrapping dynamically in CodeMirror 6';";
+
+      const view = new CMEditorView({
+        state: CMEditorState.create({
+          doc: initialDoc,
+          selection: { anchor: 16, head: 33 }, // selection of "'A very long str"
+          extensions: [wrapCompartment.of([])],
+        }),
+        parent: container,
+      });
+
+      // Capture initial state
+      const initialViewInstance = view;
+      expect(view.state.doc.toString()).toBe(initialDoc);
+      expect(view.state.selection.main.anchor).toBe(16);
+      expect(view.state.selection.main.head).toBe(33);
+      expect(view.state.selection.main.empty).toBe(false);
+
+      // Dynamically enable line wrapping via Compartment reconfiguration
+      view.dispatch({
+        effects: wrapCompartment.reconfigure(CMEditorView.lineWrapping),
+      });
+
+      // Assert:
+      // 1. EditorView instance is preserved (not destroyed/recreated)
+      expect(view).toBe(initialViewInstance);
+      // 2. Document contents are strictly identical
+      expect(view.state.doc.toString()).toBe(initialDoc);
+      // 3. Selection anchor and head are preserved
+      expect(view.state.selection.main.anchor).toBe(16);
+      expect(view.state.selection.main.head).toBe(33);
+      expect(view.state.selection.main.empty).toBe(false);
+
+      // Dynamically disable line wrapping via Compartment reconfiguration
+      view.dispatch({
+        effects: wrapCompartment.reconfigure([]),
+      });
+
+      // Assert again after disabling:
+      expect(view).toBe(initialViewInstance);
+      expect(view.state.doc.toString()).toBe(initialDoc);
+      expect(view.state.selection.main.anchor).toBe(16);
+      expect(view.state.selection.main.head).toBe(33);
+      expect(view.state.selection.main.empty).toBe(false);
+
+      view.destroy();
+      container.remove();
+    });
+
+    // E. Toggling wrapping does not trigger document updates or autosave
+    it("E. toggling wrapping does not trigger document changes or unintended autosave", () => {
+      render(<EditorView projectId={projectId} />);
+
+      const toggleBtn = screen.getByRole("button", { name: "Line wrapping" });
+
+      // Toggle wrapping on and off
+      act(() => {
+        fireEvent.click(toggleBtn);
+      });
+      act(() => {
+        fireEvent.click(toggleBtn);
+      });
+
+      // Advance timers
+      act(() => {
+        vi.advanceTimersByTime(3000);
+      });
+
+      // File should not be dirty and mockUpdateFile should not have been called
+      expect(useEditorStore.getState().isFileDirty(projectId, fileA)).toBe(false);
+      expect(mockUpdateFile).not.toHaveBeenCalled();
     });
   });
 });

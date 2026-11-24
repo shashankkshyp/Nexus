@@ -1,6 +1,6 @@
 import Image from "next/image";
-import { useCallback, useEffect, useRef } from "react";
-import { AlertTriangleIcon, CheckIcon, RefreshCwIcon, SaveIcon } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertTriangleIcon, CheckIcon, RefreshCwIcon, SaveIcon, WrapTextIcon } from "lucide-react";
 
 import { useFile, useUpdateFile } from "@/features/projects/hooks/use-files";
 
@@ -38,6 +38,7 @@ export const EditorView = ({
 
   const activeFile = useFile(activeTabId);
   const updateFile = useUpdateFile();
+  const [lineWrapping, setLineWrapping] = useState(false);
   const autosaveTimersRef = useRef<Map<Id<"files">, NodeJS.Timeout>>(new Map());
 
   // Cleanup all pending autosave timers on unmount or project change
@@ -156,6 +157,22 @@ export const EditorView = ({
           <Button
             variant="ghost"
             size="xs"
+            onClick={() => setLineWrapping((prev) => !prev)}
+            aria-label="Line wrapping"
+            aria-pressed={lineWrapping}
+            title={lineWrapping ? "Disable line wrapping" : "Enable line wrapping"}
+            className={`h-5 px-1.5 text-xs transition-colors ${
+              lineWrapping
+                ? "bg-accent text-accent-foreground hover:bg-accent/80"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <WrapTextIcon className="size-3" />
+            <span>Wrap</span>
+          </Button>
+          <Button
+            variant="ghost"
+            size="xs"
             onClick={handleManualSave}
             disabled={!activeTabId || !isDirty || isSaving}
             aria-label="Save file"
@@ -236,6 +253,7 @@ export const EditorView = ({
             fileId={activeFile._id}
             fileName={activeFile.name}
             initialValue={editorValue}
+            lineWrapping={lineWrapping}
             onChange={handleBufferChange}
             onSave={handleManualSave}
             conversationId={conversationId}
