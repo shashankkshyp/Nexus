@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { toast } from "sonner"
-import { ChevronRightIcon, CopyMinusIcon, FilePlusCornerIcon, FolderPlusIcon } from "lucide-react"
+import { ChevronRightIcon, CopyMinusIcon, FolderOpenIcon, FilePlusCornerIcon, FolderPlusIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -24,6 +24,7 @@ export const FileExplorer = ({
 }) => {
   const [isOpen, setIsOpen] = useState(true);
   const [collapseKey, setCollapseKey] = useState(0);
+  const [expandKey, setExpandKey] = useState(0);
   const [creating, setCreating] = useState<"file" | "folder" | null>(null);
 
   const project = useProject(projectId);
@@ -109,7 +110,22 @@ export const FileExplorer = ({
               onClick={(e) => {
                 e.stopPropagation();
                 e.preventDefault();
+                setIsOpen(true);
+                setExpandKey((prev) => prev + 1);
+              }}
+              variant="highlight"
+              size="icon-xs"
+              aria-label="Expand all folders"
+              title="Expand all folders"
+            >
+              <FolderOpenIcon className="size-3.5" />
+            </Button>
+            <Button
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
                 setCollapseKey((prev) => prev + 1);
+                setExpandKey(0);
               }}
               variant="highlight"
               size="icon-xs"
@@ -137,6 +153,7 @@ export const FileExplorer = ({
                 item={item}
                 level={0}
                 projectId={projectId}
+                expandKey={expandKey}
               />
             ))}
           </>
