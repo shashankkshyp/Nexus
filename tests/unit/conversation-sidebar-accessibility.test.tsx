@@ -19,14 +19,33 @@ const mockDeleteConversation = vi.fn();
 let mockConversations: Array<{ _id: string; title: string; _creationTime: number }> = [
   { _id: "conv_1", title: "First Conversation", _creationTime: Date.now() - 60000 },
 ];
+interface MockMessage {
+  _id: string;
+  role: "user" | "assistant";
+  content: string;
+  status: "completed" | "processing" | "cancelled";
+}
+
+let mockMessagesHandler: ((convId: string | null) => MockMessage[]) | null = null;
+let mockActiveConversationHandler: ((convId: string | null) => { _id: string; title: string }) | null = null;
 
 vi.mock("@/features/conversations/hooks/use-conversations", () => ({
-  useConversation: () => ({ _id: "conv_1", title: "Active Conversation" }),
+  useConversation: (convId: string | null) => {
+    if (mockActiveConversationHandler) {
+      return mockActiveConversationHandler(convId);
+    }
+    return { _id: convId ?? "conv_1", title: "Active Conversation" };
+  },
   useConversations: () => mockConversations,
   useCreateConversation: () => mockCreateConversation,
   useRenameConversation: () => mockRenameConversation,
   useDeleteConversation: () => mockDeleteConversation,
-  useMessages: () => [],
+  useMessages: (convId: string | null) => {
+    if (mockMessagesHandler) {
+      return mockMessagesHandler(convId);
+    }
+    return [];
+  },
   useExecutionEvents: () => [],
 }));
 
@@ -35,6 +54,14 @@ vi.mock("sonner", () => ({
   toast: {
     error: vi.fn(),
     success: vi.fn(),
+  },
+}));
+
+// Mock ky
+const mockKyPost = vi.fn();
+vi.mock("ky", () => ({
+  default: {
+    post: (...args: unknown[]) => mockKyPost(...args),
   },
 }));
 
@@ -573,5 +600,318 @@ describe("PastConversationsDialog - Rename UI and Accessibility (Issue #67)", ()
 
     expect(mockOnSelect).toHaveBeenCalledWith("conv_1");
     expect(mockOnOpenChange).toHaveBeenCalledWith(false);
+  });
+});
+
+describe("ConversationSidebar Regenerate latest assistant response (Issue #100)", () => {
+  const projectId = "proj_1" as Id<"projects">;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockMessagesHandler = null;
+    mockActiveConversationHandler = null;
+    mockConversations = [
+      {
+        _id: "conv_1",
+        title: "First Conversation",
+        _creationTime: Date.now() - 60000,
+      },
+    ];
+  });
+
+  // A. Accessible action
+  it("A. renders accessible Regenerate button for eligible latest completed assistant response alongside Copy", () => {
+    mockMessagesHandler = () => [
+      {
+        _id: "msg_user_1",
+        role: "user",
+        content: "Explain binary search.",
+        status: "completed",
+      },
+      {
+        _id: "msg_assistant_1",
+        role: "assistant",
+        content: "Binary search works by dividing...",
+        status: "completed",
+      },
+    ];
+
+    render(<ConversationSidebar projectId={projectId} />);
+
+    const regenerateBtn = screen.getByRole("button", { name: "Regenerate" });
+    const copyBtn = screen.getByRole("button", { name: "Copy" });
+
+    expect(regenerateBtn).toBeDefined();
+    expect(copyBtn).toBeDefined();
+    expect(regenerateBtn.getAttribute("type")).toBe("button");
+  });
+
+  // B. Correct prompt association across multiple exchanges
+  it("B. submits the user prompt immediately preceding the latest assistant response, not earlier user prompts", async () => {
+    mockKyPost.mockResolvedValue({});
+
+    mockMessagesHandler = () => [
+      {
+        _id: "msg_user_1",
+        role: "user",
+        content: "Explain binary search.",
+        status: "completed",
+      },
+      {
+        _id: "msg_assistant_1",
+        role: "assistant",
+        content: "Binary search is...",
+        status: "completed",
+      },
+      {
+        _id: "msg_user_2",
+        role: "user",
+        content: "Explain merge sort.",
+        status: "completed",
+      },
+      {
+        _id: "msg_assistant_2",
+        role: "assistant",
+        content: "Merge sort is...",
+        status: "completed",
+      },
+      {
+        _id: "msg_user_3",
+        role: "user",
+        content: "Compare both algorithms.",
+        status: "completed",
+      },
+      {
+        _id: "msg_assistant_3",
+        role: "assistant",
+        content: "Comparison of binary search and merge sort...",
+        status: "completed",
+      },
+    ];
+
+    render(<ConversationSidebar projectId={projectId} />);
+
+    // Only the latest completed assistant message has actions
+    const regenerateBtn = screen.getByRole("button", { name: "Regenerate" });
+    fireEvent.click(regenerateBtn);
+
+    await waitFor(() => {
+      expect(mockKyPost).toHaveBeenCalledTimes(1);
+      expect(mockKyPost).toHaveBeenCalledWith("/api/messages", {
+        json: {
+          conversationId: "conv_1",
+          message: "Compare both algorithms.",
+        },
+      });
+    });
+  });
+
+  // C. Exact prompt preservation (leading/trailing whitespace, multiline, selected-code context)
+  it("C. preserves exact prompt content including leading/trailing whitespace and multiline format", async () => {
+    mockKyPost.mockResolvedValue({});
+
+    const exactPrompt = "   \nfunction test() {\n  return 42;\n}\n   ";
+
+    mockMessagesHandler = () => [
+      {
+        _id: "msg_user_1",
+        role: "user",
+        content: exactPrompt,
+        status: "completed",
+      },
+      {
+        _id: "msg_assistant_1",
+        role: "assistant",
+        content: "Here is the explanation...",
+        status: "completed",
+      },
+    ];
+
+    render(<ConversationSidebar projectId={projectId} />);
+
+    const regenerateBtn = screen.getByRole("button", { name: "Regenerate" });
+    fireEvent.click(regenerateBtn);
+
+    await waitFor(() => {
+      expect(mockKyPost).toHaveBeenCalledTimes(1);
+      expect(mockKyPost).toHaveBeenCalledWith("/api/messages", {
+        json: {
+          conversationId: "conv_1",
+          message: exactPrompt,
+        },
+      });
+    });
+  });
+
+  // D. No preceding user message
+  it("D. does not render Regenerate button if the assistant message has no preceding user message", () => {
+    mockMessagesHandler = () => [
+      {
+        _id: "msg_assistant_only",
+        role: "assistant",
+        content: "Welcome to Nexus! How can I help?",
+        status: "completed",
+      },
+    ];
+
+    render(<ConversationSidebar projectId={projectId} />);
+
+    expect(screen.queryByRole("button", { name: "Regenerate" })).toBeNull();
+    // Copy action remains available
+    expect(screen.getByRole("button", { name: "Copy" })).toBeDefined();
+  });
+
+  // E. Processing state prevents duplicate or invalid requests
+  it("E. disables Regenerate button while another message is processing", () => {
+    mockMessagesHandler = () => [
+      {
+        _id: "msg_user_1",
+        role: "user",
+        content: "First question",
+        status: "completed",
+      },
+      {
+        _id: "msg_assistant_1",
+        role: "assistant",
+        content: "First answer",
+        status: "completed",
+      },
+      {
+        _id: "msg_user_2",
+        role: "user",
+        content: "Second question",
+        status: "completed",
+      },
+      {
+        _id: "msg_assistant_2",
+        role: "assistant",
+        content: "",
+        status: "processing",
+      },
+    ];
+
+    render(<ConversationSidebar projectId={projectId} />);
+
+    // Since msg_assistant_2 is processing and is the latest assistant message,
+    // Regenerate should not be rendered for the incomplete response
+    expect(screen.queryByRole("button", { name: "Regenerate" })).toBeNull();
+  });
+
+  // F. Cancelled response does not expose Regenerate
+  it("F. does not expose Regenerate for a cancelled latest assistant response", () => {
+    mockMessagesHandler = () => [
+      {
+        _id: "msg_user_1",
+        role: "user",
+        content: "Cancelled request prompt",
+        status: "completed",
+      },
+      {
+        _id: "msg_assistant_1",
+        role: "assistant",
+        content: "",
+        status: "cancelled",
+      },
+    ];
+
+    render(<ConversationSidebar projectId={projectId} />);
+
+    expect(screen.queryByRole("button", { name: "Regenerate" })).toBeNull();
+  });
+
+  // G. Conversation switching isolation
+  it("G. submits regeneration prompt using the active conversation ID, avoiding stale context", async () => {
+    mockKyPost.mockResolvedValue({});
+
+    mockConversations = [
+      { _id: "conv_1", title: "Conversation 1", _creationTime: 100 },
+      { _id: "conv_2", title: "Conversation 2", _creationTime: 200 },
+    ];
+
+    mockMessagesHandler = (convId) => {
+      if (convId === "conv_2") {
+        return [
+          {
+            _id: "msg_user_conv2",
+            role: "user",
+            content: "Prompt in conversation 2",
+            status: "completed",
+          },
+          {
+            _id: "msg_assistant_conv2",
+            role: "assistant",
+            content: "Answer in conversation 2",
+            status: "completed",
+          },
+        ];
+      }
+      return [
+        {
+          _id: "msg_user_conv1",
+          role: "user",
+          content: "Prompt in conversation 1",
+          status: "completed",
+        },
+        {
+          _id: "msg_assistant_conv1",
+          role: "assistant",
+          content: "Answer in conversation 1",
+          status: "completed",
+        },
+      ];
+    };
+
+    const { rerender } = render(<ConversationSidebar projectId={projectId} />);
+
+    // Open past conversations dialog and switch to conv_2
+    fireEvent.click(screen.getByRole("button", { name: "Past conversations" }));
+    fireEvent.click(screen.getByText("Conversation 2"));
+
+    rerender(<ConversationSidebar projectId={projectId} />);
+
+    // Click Regenerate in conv_2
+    const regenerateBtn = screen.getByRole("button", { name: "Regenerate" });
+    fireEvent.click(regenerateBtn);
+
+    await waitFor(() => {
+      expect(mockKyPost).toHaveBeenCalledWith("/api/messages", {
+        json: {
+          conversationId: "conv_2",
+          message: "Prompt in conversation 2",
+        },
+      });
+    });
+  });
+
+  // H. Error handling preserves history and notifies user
+  it("H. shows error toast when regeneration request fails without mutating history", async () => {
+    mockKyPost.mockRejectedValue(new Error("Network failed"));
+
+    mockMessagesHandler = () => [
+      {
+        _id: "msg_user_1",
+        role: "user",
+        content: "Prompt that will fail",
+        status: "completed",
+      },
+      {
+        _id: "msg_assistant_1",
+        role: "assistant",
+        content: "Existing assistant response that must remain",
+        status: "completed",
+      },
+    ];
+
+    render(<ConversationSidebar projectId={projectId} />);
+
+    const regenerateBtn = screen.getByRole("button", { name: "Regenerate" });
+    fireEvent.click(regenerateBtn);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("Message failed to send");
+    });
+
+    // Previous assistant answer remains visible
+    expect(screen.getByText("Existing assistant response that must remain")).toBeDefined();
   });
 });

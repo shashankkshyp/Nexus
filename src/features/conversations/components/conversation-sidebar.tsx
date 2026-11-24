@@ -1,7 +1,7 @@
 import ky from "ky";
 import { toast } from "sonner";
 import { useEffect, useRef, useState } from "react";
-import { CopyIcon, HistoryIcon, LoaderIcon, PlusIcon } from "lucide-react";
+import { CopyIcon, HistoryIcon, LoaderIcon, PlusIcon, RotateCcwIcon } from "lucide-react";
 
 import {
   Conversation,
@@ -129,6 +129,56 @@ export const ConversationSidebar = ({
   const isProcessing = conversationMessages?.some(
     (msg) => msg.status === "processing",
   );
+
+  // Identify the latest completed assistant response index and its immediately preceding user prompt
+  const latestCompletedAssistantInfo = (() => {
+    if (!conversationMessages || conversationMessages.length === 0) return null;
+
+    // Scan backwards from the end of the messages list to find the latest completed assistant message
+    for (let i = conversationMessages.length - 1; i >= 0; i--) {
+      const msg = conversationMessages[i];
+      if (msg.role === "assistant") {
+        if (msg.status === "completed") {
+          // Find the immediately preceding user message in conversation order
+          for (let j = i - 1; j >= 0; j--) {
+            if (conversationMessages[j].role === "user") {
+              return {
+                assistantIndex: i,
+                assistantId: msg._id,
+                precedingUserPrompt: conversationMessages[j].content,
+              };
+            }
+          }
+          // Assistant message has no preceding user message
+          return {
+            assistantIndex: i,
+            assistantId: msg._id,
+            precedingUserPrompt: null,
+          };
+        }
+        // If the latest assistant response is not completed (e.g. streaming, processing, or cancelled),
+        // regeneration is not eligible
+        return null;
+      }
+    }
+    return null;
+  })();
+
+  const handleRegenerate = async (promptToResubmit: string) => {
+    if (isProcessing) return;
+    if (!activeConversationId) return;
+
+    try {
+      await ky.post("/api/messages", {
+        json: {
+          conversationId: activeConversationId,
+          message: promptToResubmit,
+        },
+      });
+    } catch {
+      toast.error("Message failed to send");
+    }
+  };
 
   const handleCancel = async () => {
     try {
@@ -276,11 +326,28 @@ export const ConversationSidebar = ({
                     message.status === "completed" &&
                     messageIndex === (conversationMessages?.length ?? 0) - 1 && (
                       <MessageActions>
+                        {latestCompletedAssistantInfo &&
+                          latestCompletedAssistantInfo.assistantId === message._id &&
+                          latestCompletedAssistantInfo.precedingUserPrompt !== null && (
+                            <MessageAction
+                              onClick={() => {
+                                if (latestCompletedAssistantInfo.precedingUserPrompt !== null) {
+                                  handleRegenerate(latestCompletedAssistantInfo.precedingUserPrompt);
+                                }
+                              }}
+                              disabled={isProcessing}
+                              label="Regenerate"
+                              tooltip="Regenerate"
+                            >
+                              <RotateCcwIcon className="size-3" />
+                            </MessageAction>
+                          )}
                         <MessageAction
                           onClick={() => {
                             navigator.clipboard.writeText(message.content);
                           }}
                           label="Copy"
+                          tooltip="Copy"
                         >
                           <CopyIcon className="size-3" />
                         </MessageAction>
