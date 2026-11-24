@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { ChevronRightIcon } from "lucide-react";
@@ -27,14 +27,24 @@ export const Tree = ({
   item,
   level = 0,
   projectId,
+  expandKey = 0,
 }: {
   item: Doc<"files">;
   level?: number;
   projectId: Id<"projects">;
+  expandKey?: number;
 }) => {
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(expandKey > 0 && item.type === "folder");
   const [isRenaming, setIsRenaming] = useState(false);
   const [creating, setCreating] = useState<"file" | "folder" | null>(null);
+  const lastProcessedExpandKeyRef = useRef(expandKey);
+
+  useEffect(() => {
+    if (expandKey > 0 && item.type === "folder" && expandKey !== lastProcessedExpandKeyRef.current) {
+      lastProcessedExpandKeyRef.current = expandKey;
+      setIsOpen(true);
+    }
+  }, [expandKey, item.type]);
 
   const renameFile = useRenameFile({
     projectId,
@@ -209,6 +219,7 @@ export const Tree = ({
                 item={subItem}
                 level={level + 1}
                 projectId={projectId}
+                expandKey={expandKey}
               />
             ))}
           </>
@@ -237,6 +248,7 @@ export const Tree = ({
                 item={subItem}
                 level={level + 1}
                 projectId={projectId}
+                expandKey={expandKey}
               />
             ))}
           </>
@@ -270,6 +282,7 @@ export const Tree = ({
               item={subItem}
               level={level + 1}
               projectId={projectId}
+              expandKey={expandKey}
             />
           ))}
         </>
