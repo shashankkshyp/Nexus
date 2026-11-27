@@ -267,6 +267,9 @@ export const deleteFile = mutation({
     if (project.ownerId !== identity.subject)
       throw new Error("Unauthorized to access this project");
 
+    const deletedFileIds: Id<"files">[] = [];
+    const deletedFolderIds: Id<"files">[] = [];
+
     const deleteRecursive = async (fileId: Id<"files">) => {
       const item = await ctx.db.get("files", fileId);
 
@@ -281,6 +284,9 @@ export const deleteFile = mutation({
           .collect();
 
         for (const child of children) await deleteRecursive(child._id);
+        deletedFolderIds.push(fileId);
+      } else {
+        deletedFileIds.push(fileId);
       }
 
       if (item.storageId) await ctx.storage.delete(item.storageId);
@@ -293,6 +299,11 @@ export const deleteFile = mutation({
     await ctx.db.patch("projects", file.projectId, {
       updatedAt: Date.now(),
     });
+
+    return {
+      deletedFileIds,
+      deletedFolderIds,
+    };
   },
 });
 
