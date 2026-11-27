@@ -282,3 +282,253 @@ describe("Issue #4 - Editor Dirty Tracking & Conflict Detection Store", () => {
     assert.equal(store.getTabState(projectId).activeTabId, null);
   });
 });
+
+describe("Issue #108 - Recursive Folder Deletion & Descendant Editor Tabs Cleanup", () => {
+  const projectId = "proj_1";
+
+  // Reusable simulated recursive deletion logic matching convex/files.ts
+  async function simulateRecursiveDelete(db, storage, rootId) {
+    const deletedFileIds = [];
+    const deletedFolderIds = [];
+
+    const deleteRecursive = async (fileId) => {
+      const item = db.get(fileId);
+      if (!item) return;
+
+      if (item.type === "folder") {
+        const children = Array.from(db.values()).filter(
+          (f) => f.projectId === item.projectId && f.parentId === fileId
+        );
+        for (const child of children) {
+          await deleteRecursive(child._id);
+        }
+        deletedFolderIds.push(fileId);
+      } else {
+        deletedFileIds.push(fileId);
+      }
+
+      if (item.storageId && storage) {
+        await storage.delete(item.storageId);
+      }
+
+      db.delete(fileId);
+    };
+
+    await deleteRecursive(rootId);
+    return { deletedFileIds, deletedFolderIds };
+  }
+
+  // Simulated folder deletion handler matching tree.tsx
+  async function handleFolderDelete(folderId, deleteFileFn, closeTabFn) {
+    try {
+      const result = await deleteFileFn({ id: folderId });
+      if (result && Array.isArray(result.deletedFileIds)) {
+        for (const fileId of result.deletedFileIds) {
+          closeTabFn(fileId);
+        }
+      }
+      return result;
+    } catch (error) {
+      return { error };
+    }
+  }
+
+  beforeEach(() => {
+    useEditorStore.setState({ tabs: new Map() });
+  });
+
+  // Test 1 — Recursive deleted IDs: Verify that deleting a nested folder returns the root folder ID and all descendant file and folder IDs
+  test("Test 1 — Recursive deleted IDs: returns root folder and all descendant file and folder IDs", async () => {
+    const db = new Map([
+      ["root_folder", { _id: "root_folder", projectId, type: "folder", parentId: undefined }],
+      ["child_folder", { _id: "child_folder", projectId, type: "folder", parentId: "root_folder" }],
+      ["child_file", { _id: "child_file", projectId, type: "file", parentId: "root_folder" }],
+      ["nested_file", { _id: "nested_file", projectId, type: "file", parentId: "child_folder" }],
+      ["unrelated_file", { _id: "unrelated_file", projectId, type: "file", parentId: undefined }],
+    ]);
+
+    const result = await simulateRecursiveDelete(db, null, "root_folder");
+
+    assert.ok(result.deletedFolderIds.includes("root_folder"));
+    assert.ok(result.deletedFolderIds.includes("child_folder"));
+    assert.ok(result.deletedFileIds.includes("child_file"));
+    assert.ok(result.deletedFileIds.includes("nested_file"));
+    assert.equal(result.deletedFileIds.includes("unrelated_file"), false);
+    assert.equal(result.deletedFolderIds.includes("unrelated_file"), false);
+
+    // Verify database entries deleted
+    assert.equal(db.has("root_folder"), false);
+    assert.equal(db.has("child_folder"), false);
+    assert.equal(db.has("child_file"), false);
+    assert.equal(db.has("nested_file"), false);
+    assert.equal(db.has("unrelated_file"), true);
+  });
+
+  // Test 2 — Nested folder descendants: Verify that files several levels deep are included in the deletion result
+  test("Test 2 — Nested folder descendants: files several levels deep are included in the deletion result", async () => {
+    const db = new Map([
+      ["l1", { _id: "l1", projectId, type: "folder", parentId: undefined }],
+      ["l2", { _id: "l2", projectId, type: "folder", parentId: "l1" }],
+      ["l3", { _id: "l3", projectId, type: "folder", parentId: "l2" }],
+      ["deep_file", { _id: "deep_file", projectId, type: "file", parentId: "l3" }],
+    ]);
+
+    const result = await simulateRecursiveDelete(db, null, "l1");
+
+    assert.deepEqual(result.deletedFileIds, ["deep_file"]);
+    assert.ok(result.deletedFolderIds.includes("l1"));
+    assert.ok(result.deletedFolderIds.includes("l2"));
+    assert.ok(result.deletedFolderIds.includes("l3"));
+  });
+
+  // Test 3 — File-only tab cleanup: Verify that the client calls closeTab for deleted file IDs but never for folder IDs
+  test("Test 3 — File-only tab cleanup: calls closeTab for deleted file IDs but never for folder IDs", async () => {
+    const closedTabs = [];
+    const deleteFileFn = async () => ({
+      deletedFileIds: ["f1", "f2"],
+      deletedFolderIds: ["dir1", "dir2"],
+    });
+    const closeTabFn = (id) => closedTabs.push(id);
+
+    await handleFolderDelete("dir1", deleteFileFn, closeTabFn);
+
+    assert.deepEqual(closedTabs, ["f1", "f2"]);
+    assert.equal(closedTabs.includes("dir1"), false);
+    assert.equal(closedTabs.includes("dir2"), false);
+  });
+
+  // Test 4 — Multiple open descendants: Verify that all open file tabs belonging to the deleted subtree are closed
+  test("Test 4 — Multiple open descendants: all open file tabs belonging to the deleted subtree are closed", async () => {
+    const store = useEditorStore.getState();
+    store.openFile(projectId, "f1", { pinned: true, initialContent: "f1 content" });
+    store.openFile(projectId, "f2", { pinned: true, initialContent: "f2 content" });
+    store.openFile(projectId, "f3", { pinned: true, initialContent: "f3 content" });
+
+    const deleteFileFn = async () => ({
+      deletedFileIds: ["f1", "f2"],
+      deletedFolderIds: ["dir1"],
+    });
+
+    await handleFolderDelete("dir1", deleteFileFn, (id) => store.closeTab(projectId, id));
+
+    const state = store.getTabState(projectId);
+    assert.equal(state.openTabs.includes("f1"), false);
+    assert.equal(state.openTabs.includes("f2"), false);
+    assert.equal(state.openTabs.includes("f3"), true);
+    assert.equal(store.getTabData(projectId, "f1"), undefined);
+    assert.equal(store.getTabData(projectId, "f2"), undefined);
+    assert.notEqual(store.getTabData(projectId, "f3"), undefined);
+  });
+
+  // Test 5 — Unrelated tabs preserved: Verify that tabs outside the deleted subtree remain open
+  test("Test 5 — Unrelated tabs preserved: tabs outside deleted subtree remain open with their state intact", async () => {
+    const store = useEditorStore.getState();
+    store.openFile(projectId, "nested_f1", { pinned: true, initialContent: "nested" });
+    store.openFile(projectId, "unrelated_f1", { pinned: true, initialContent: "unrelated content" });
+
+    // Make unrelated_f1 dirty
+    store.updateBuffer(projectId, "unrelated_f1", "unrelated edited");
+    assert.equal(store.isFileDirty(projectId, "unrelated_f1"), true);
+
+    const deleteFileFn = async () => ({
+      deletedFileIds: ["nested_f1"],
+      deletedFolderIds: ["dir_a"],
+    });
+
+    await handleFolderDelete("dir_a", deleteFileFn, (id) => store.closeTab(projectId, id));
+
+    const state = store.getTabState(projectId);
+    assert.equal(state.openTabs.includes("nested_f1"), false);
+    assert.equal(state.openTabs.includes("unrelated_f1"), true);
+    assert.equal(store.isFileDirty(projectId, "unrelated_f1"), true);
+    assert.equal(store.getTabData(projectId, "unrelated_f1")?.buffer, "unrelated edited");
+  });
+
+  // Test 6 — Active descendant cleanup: Verify that deleting active descendant tab invokes store cleanup and does not leave stale active-tab reference
+  test("Test 6 — Active descendant cleanup: activates another tab or clears activeTabId if none remain", async () => {
+    const store = useEditorStore.getState();
+    store.openFile(projectId, "f_other", { pinned: true, initialContent: "other" });
+    store.openFile(projectId, "f_active", { pinned: true, initialContent: "active" });
+
+    store.setActiveTab(projectId, "f_active");
+    assert.equal(store.getTabState(projectId).activeTabId, "f_active");
+
+    const deleteFileFn = async () => ({
+      deletedFileIds: ["f_active"],
+      deletedFolderIds: ["dir_active"],
+    });
+
+    await handleFolderDelete("dir_active", deleteFileFn, (id) => store.closeTab(projectId, id));
+
+    // f_active is closed, active tab switches to f_other
+    assert.equal(store.getTabState(projectId).activeTabId, "f_other");
+    assert.equal(store.getTabState(projectId).openTabs.includes("f_active"), false);
+
+    // Now delete f_other as well
+    const deleteOtherFn = async () => ({
+      deletedFileIds: ["f_other"],
+      deletedFolderIds: ["dir_other"],
+    });
+    await handleFolderDelete("dir_other", deleteOtherFn, (id) => store.closeTab(projectId, id));
+
+    assert.equal(store.getTabState(projectId).activeTabId, null);
+    assert.equal(store.getTabState(projectId).openTabs.length, 0);
+  });
+
+  // Test 7 — Failed deletion: Make deletion reject, verify no tabs closed and error handled
+  test("Test 7 — Failed deletion: rejection preserves tabs and does not close them", async () => {
+    const store = useEditorStore.getState();
+    store.openFile(projectId, "f1", { pinned: true, initialContent: "content" });
+    store.updateBuffer(projectId, "f1", "dirty content");
+
+    let closeTabCalled = false;
+    const deleteFileFn = async () => {
+      throw new Error("Unauthorized");
+    };
+    const closeTabFn = (id) => {
+      closeTabCalled = true;
+      store.closeTab(projectId, id);
+    };
+
+    const res = await handleFolderDelete("folder_1", deleteFileFn, closeTabFn);
+
+    assert.equal(closeTabCalled, false);
+    assert.ok(res.error);
+    assert.equal(res.error.message, "Unauthorized");
+    assert.equal(store.getTabState(projectId).openTabs.includes("f1"), true);
+    assert.equal(store.isFileDirty(projectId, "f1"), true);
+  });
+
+  // Test 8 — Direct file deletion regression: Verify direct file deletion closes only the selected file's tab
+  test("Test 8 — Direct file deletion regression: direct file deletion closes only that file tab", async () => {
+    const store = useEditorStore.getState();
+    store.openFile(projectId, "f1", { pinned: true, initialContent: "f1" });
+    store.openFile(projectId, "f2", { pinned: true, initialContent: "f2" });
+
+    // File deletion in tree.tsx calls closeTab(item._id) then deleteFile({ id: item._id })
+    store.closeTab(projectId, "f1");
+
+    assert.equal(store.getTabState(projectId).openTabs.includes("f1"), false);
+    assert.equal(store.getTabState(projectId).openTabs.includes("f2"), true);
+  });
+
+  // Test 9 — Empty folder: Verify deleting an empty folder does not cause unnecessary tab cleanup
+  test("Test 9 — Empty folder: deleting empty folder returns empty deletedFileIds and performs no tab cleanup", async () => {
+    const store = useEditorStore.getState();
+    store.openFile(projectId, "existing_file", { pinned: true, initialContent: "keep" });
+
+    const closedTabs = [];
+    const deleteFileFn = async () => ({
+      deletedFileIds: [],
+      deletedFolderIds: ["empty_dir"],
+    });
+
+    await handleFolderDelete("empty_dir", deleteFileFn, (id) => {
+      closedTabs.push(id);
+      store.closeTab(projectId, id);
+    });
+
+    assert.equal(closedTabs.length, 0);
+    assert.equal(store.getTabState(projectId).openTabs.includes("existing_file"), true);
+  });
+});

@@ -264,8 +264,19 @@ export const Tree = ({
         level={level}
         onClick={() => setIsOpen((value) => !value)}
         onRename={() => setIsRenaming(true)}
-        onDelete={() => {
-          deleteFile({ id: item._id });
+        onDelete={async () => {
+          try {
+            const result = await deleteFile({ id: item._id });
+            if (result && Array.isArray(result.deletedFileIds)) {
+              for (const fileId of result.deletedFileIds) {
+                closeTab(fileId);
+              }
+            }
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : "Failed to delete folder";
+            toast.error(message);
+          }
         }}
         onCopyPath={handleCopyPath}
         onCreateFile={() => startCreating("file")}
