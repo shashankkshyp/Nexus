@@ -503,6 +503,123 @@ describe("ExportPopover - Issue #85: Persisted export failure details in retry U
     });
   });
 
+  describe("Issue #127: Progress details and cancellation confirmation", () => {
+    it("renders batch progress and percentage from persisted export state", () => {
+      currentProjectMock = {
+        _id: PROJECT_ID,
+        name: "my-test-project",
+        exportStatus: "exporting",
+        exportProgress: {
+          status: "running",
+          totalFiles: 100,
+          processedFiles: 42,
+          currentBatch: 2,
+          totalBatches: 4,
+        },
+      };
+
+      render(<ExportPopover projectId={PROJECT_ID} />);
+      openPopover();
+
+      expect(screen.getByText("Uploading batch 2 of 4")).toBeDefined();
+      expect(screen.getByText("42 / 100 files (42%)")).toBeDefined();
+      expect(screen.getByRole("progressbar", { name: "Export progress" })).toBeDefined();
+    });
+
+    it("renders a truthful fallback when persisted progress is unavailable", () => {
+      currentProjectMock = {
+        _id: PROJECT_ID,
+        name: "my-test-project",
+        exportStatus: "exporting",
+        exportProgress: undefined,
+      };
+
+      render(<ExportPopover projectId={PROJECT_ID} />);
+      openPopover();
+
+      expect(screen.getByText("Preparing files for export...")).toBeDefined();
+      expect(screen.getByText("Progress details will appear when available.")).toBeDefined();
+      expect(screen.queryByRole("progressbar", { name: "Export progress" })).toBeNull();
+    });
+
+    it("requires confirmation before sending a cancellation request", () => {
+      currentProjectMock = {
+        _id: PROJECT_ID,
+        name: "my-test-project",
+        exportStatus: "exporting",
+        exportProgress: {
+          status: "running",
+          totalFiles: 10,
+          processedFiles: 1,
+        },
+      };
+
+      render(<ExportPopover projectId={PROJECT_ID} />);
+      openPopover();
+
+      fireEvent.click(screen.getByRole("button", { name: "Cancel export" }));
+      expect(screen.getByRole("heading", { name: "Cancel GitHub export?" })).toBeDefined();
+      expect(mockPost).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Keep exporting" }));
+      expect(screen.queryByRole("heading", { name: "Cancel GitHub export?" })).toBeNull();
+      expect(mockPost).not.toHaveBeenCalled();
+    });
+
+    it("sends one cancellation request after confirmation and disables repeated confirmation", async () => {
+      let resolveCancellation!: (value: unknown) => void;
+      mockPost.mockImplementationOnce(() => new Promise((resolve) => {
+        resolveCancellation = resolve;
+      }));
+      currentProjectMock = {
+        _id: PROJECT_ID,
+        name: "my-test-project",
+        exportStatus: "exporting",
+        exportProgress: {
+          status: "running",
+          totalFiles: 10,
+          processedFiles: 1,
+        },
+      };
+
+      render(<ExportPopover projectId={PROJECT_ID} />);
+      openPopover();
+      fireEvent.click(screen.getByRole("button", { name: "Cancel export" }));
+      fireEvent.click(screen.getByRole("button", { name: "Confirm cancellation" }));
+      fireEvent.click(screen.getByRole("button", { name: "Cancelling..." }));
+
+      expect(mockPost).toHaveBeenCalledTimes(1);
+      expect(mockPost).toHaveBeenCalledWith("/api/github/export/cancel", {
+        json: { projectId: PROJECT_ID },
+      });
+
+      await act(async () => {
+        resolveCancellation({ json: async () => ({ success: true }) });
+      });
+    });
+
+    it("renders cancelled state with reset available", () => {
+      currentProjectMock = {
+        _id: PROJECT_ID,
+        name: "my-test-project",
+        exportStatus: "cancelled",
+        exportProgress: {
+          status: "cancelled",
+          totalFiles: 10,
+          processedFiles: 3,
+          errorMessage: "Cancelled by user",
+        },
+      };
+
+      render(<ExportPopover projectId={PROJECT_ID} />);
+      openPopover();
+
+      expect(screen.getByText("Export cancelled")).toBeDefined();
+      expect(screen.getByRole("button", { name: "Start a new export" })).toBeDefined();
+      expect(screen.queryByText("Exporting to GitHub...")).toBeNull();
+    });
+  });
+
   describe("Regression: Idle & Export Form Behavior", () => {
     it("19 & 20. renders export form when exportStatus is idle / undefined", () => {
       currentProjectMock = {
