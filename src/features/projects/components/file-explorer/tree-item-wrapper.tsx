@@ -45,7 +45,13 @@ export const TreeItemWrapper = ({
           onClick={onClick}
           onDoubleClick={onDoubleClick}
           onKeyDown={(e) => {
+            if (e.target !== e.currentTarget) {
+              return;
+            }
             if (e.key === "Enter") {
+              e.preventDefault();
+              onClick?.();
+            } else if (e.key === "F2") {
               e.preventDefault();
               onRename?.();
             }
@@ -89,7 +95,7 @@ export const TreeItemWrapper = ({
         >
           Rename...
           <ContextMenuShortcut>
-            Enter
+            F2
           </ContextMenuShortcut>
         </ContextMenuItem>
         <ContextMenuItem
