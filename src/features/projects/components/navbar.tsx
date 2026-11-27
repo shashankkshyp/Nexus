@@ -42,6 +42,7 @@ export const Navbar = ({
   const renameProject = useRenameProject();
 
   const [isRenaming, setIsRenaming] = useState(false);
+  const [isRenamePending, setIsRenamePending] = useState(false);
   const [name, setName] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const isCommittedRef = useRef(false);
@@ -53,25 +54,27 @@ export const Navbar = ({
     setIsRenaming(true);
   };
 
-  const handleSubmit = () => {
-    if (isCommittedRef.current) return;
+  const handleSubmit = async () => {
+    if (isCommittedRef.current || isRenamePending) return;
     isCommittedRef.current = true;
 
     if (!project) return;
-    setIsRenaming(false);
-
     const trimmedName = name.trim();
-    if (!trimmedName || trimmedName === project.name) return;
+    if (!trimmedName || trimmedName === project.name) {
+      setIsRenaming(false);
+      return;
+    }
 
+    setIsRenamePending(true);
     try {
-      const result = renameProject({ id: projectId, name: trimmedName });
-      if (result && typeof (result as Promise<unknown>).catch === "function") {
-        (result as Promise<unknown>).catch((error) => {
-          console.error(error);
-        });
-      }
+      await renameProject({ id: projectId, name: trimmedName });
+      setIsRenaming(false);
     } catch (error) {
       console.error(error);
+      setName(project.name);
+      toast.error(error instanceof Error ? error.message : "Unable to rename project");
+    } finally {
+      setIsRenamePending(false);
     }
   };
 
@@ -137,6 +140,7 @@ export const Navbar = ({
                   onFocus={(e) => e.currentTarget.select()}
                   onBlur={handleSubmit}
                   onKeyDown={handleKeyDown}
+                  disabled={isRenamePending}
                   className="text-sm bg-transparent text-foreground outline-none focus:ring-1 focus:ring-inset focus:ring-ring font-medium max-w-40 truncate"
                 />
               ) : (
