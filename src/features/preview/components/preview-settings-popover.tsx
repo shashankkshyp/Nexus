@@ -1,7 +1,7 @@
 "use client";
 
 import { z } from "zod";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "@tanstack/react-form";
 import { SettingsIcon } from "lucide-react";
 
@@ -122,43 +122,78 @@ export const PreviewSettingsPopover = ({
   onSave,
 }: PreviewSettingsPopoverProps) => {
   const [open, setOpen] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const updateSettings = useUpdateProjectSettings();
+  const previousProjectIdRef = useRef<Id<"projects"> | null>(null);
+  const saveSequenceRef = useRef(0);
+  const pendingSaveRef = useRef<number | null>(null);
+
+  const getFormValues = () => ({
+    installCommand: initialValues?.installCommand ?? "",
+    devCommand: initialValues?.devCommand ?? "",
+    envVariablesText: formatEnvVariables(initialValues?.envVariables),
+  });
 
   const form = useForm({
-    defaultValues: {
-      installCommand: initialValues?.installCommand ?? "",
-      devCommand: initialValues?.devCommand ?? "",
-      envVariablesText: formatEnvVariables(initialValues?.envVariables),
-    },
+    defaultValues: getFormValues(),
     validators: {
       onSubmit: formSchema,
     },
     onSubmit: async ({ value }) => {
+      if (pendingSaveRef.current !== null) return;
       const result = validateEnvVariables(value.envVariablesText);
       if (!result.valid) {
         return;
       }
-      const parsedEnv = result.env;
-      await updateSettings({
-        id: projectId,
-        settings: {
-          installCommand: value.installCommand.trim() || undefined,
-          devCommand: value.devCommand.trim() || undefined,
-          envVariables: Object.keys(parsedEnv).length > 0 ? parsedEnv : undefined,
-        },
-      });
-      setOpen(false);
-      onSave?.();
+
+      const submittedProjectId = projectId;
+      const requestId = ++saveSequenceRef.current;
+      const submittedSettings = {
+        installCommand: value.installCommand.trim() || undefined,
+        devCommand: value.devCommand.trim() || undefined,
+        envVariables: Object.keys(result.env).length > 0 ? { ...result.env } : undefined,
+      };
+
+      pendingSaveRef.current = requestId;
+      setSaveError(null);
+      try {
+        await updateSettings({ id: submittedProjectId, settings: submittedSettings });
+        if (pendingSaveRef.current === requestId && projectId === submittedProjectId) {
+          setOpen(false);
+          onSave?.();
+        }
+      } catch (error) {
+        if (pendingSaveRef.current === requestId && projectId === submittedProjectId) {
+          setSaveError(
+            error instanceof Error && error.message.trim()
+              ? error.message
+              : "Unable to save preview settings. Please try again.",
+          );
+        }
+      } finally {
+        if (pendingSaveRef.current === requestId) pendingSaveRef.current = null;
+      }
     },
   });
 
+  useEffect(() => {
+    if (previousProjectIdRef.current === null) {
+      previousProjectIdRef.current = projectId;
+      return;
+    }
+    if (previousProjectIdRef.current !== projectId) {
+      previousProjectIdRef.current = projectId;
+      saveSequenceRef.current += 1;
+      pendingSaveRef.current = null;
+      setSaveError(null);
+      form.reset(getFormValues());
+    }
+  }, [form, initialValues?.devCommand, initialValues?.envVariables, initialValues?.installCommand, projectId]);
+
   const handleOpenChange = (isOpen: boolean) => {
     if (isOpen) {
-      form.reset({
-        installCommand: initialValues?.installCommand ?? "",
-        devCommand: initialValues?.devCommand ?? "",
-        envVariablesText: formatEnvVariables(initialValues?.envVariables),
-      });
+      form.reset(getFormValues());
+      setSaveError(null);
     }
     setOpen(isOpen);
   };
@@ -269,6 +304,11 @@ export const PreviewSettingsPopover = ({
                 </Button>
               )}
             </form.Subscribe>
+            {saveError && (
+              <p role="alert" className="text-xs text-destructive">
+                {saveError}
+              </p>
+            )}
           </div>
         </form>
       </PopoverContent>
