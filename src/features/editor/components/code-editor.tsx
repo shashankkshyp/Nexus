@@ -15,6 +15,11 @@ import { selectionTooltip } from "../extensions/selection-tooltip";
 import type { SelectedCodeContext } from "../extensions/selection-tooltip";
 import type { Id } from "../../../../convex/_generated/dataModel";
 
+export interface CursorPosition {
+  line: number;
+  column: number;
+}
+
 interface Props {
   projectId: Id<"projects">;
   fileId: Id<"files">;
@@ -26,6 +31,7 @@ interface Props {
   onSave?: () => void;
   conversationId?: Id<"conversations">;
   onSelectedCode?: (context: SelectedCodeContext) => void;
+  onCursorPositionChange?: (position: CursorPosition) => void;
 }
 
 export const CodeEditor = (props: Props) => {
@@ -39,12 +45,15 @@ export const CodeEditor = (props: Props) => {
   const onSave = props.onSave;
   const conversationId = props.conversationId;
   const onSelectedCode = props.onSelectedCode;
+  const onCursorPositionChange = props.onCursorPositionChange;
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const wrapCompartmentRef = useRef<Compartment | null>(null);
   const onSaveRef = useRef(onSave);
   const onSelectedCodeRef = useRef(onSelectedCode);
   const conversationIdRef = useRef(conversationId);
+  const onCursorPositionChangeRef = useRef(onCursorPositionChange);
+  const lastReportedCursorRef = useRef<CursorPosition | null>(null);
 
   useEffect(() => {
     onSaveRef.current = onSave;
@@ -55,6 +64,9 @@ export const CodeEditor = (props: Props) => {
   useEffect(() => {
     conversationIdRef.current = conversationId;
   }, [conversationId]);
+  useEffect(() => {
+    onCursorPositionChangeRef.current = onCursorPositionChange;
+  }, [onCursorPositionChange]);
 
   const languageExtension = useMemo(() => {
     return getLanguageExtension(fileName)
@@ -136,11 +148,30 @@ export const CodeEditor = (props: Props) => {
           if (update.docChanged) {
             onChange(update.state.doc.toString());
           }
+          if (update.selectionSet || update.docChanged) {
+            const selection = update.state.selection.main;
+            const line = update.state.doc.lineAt(selection.head);
+            const column = selection.head - line.from + 1;
+            const newPos = { line: line.number, column };
+            const lastPos = lastReportedCursorRef.current;
+            if (!lastPos || lastPos.line !== newPos.line || lastPos.column !== newPos.column) {
+              lastReportedCursorRef.current = newPos;
+              onCursorPositionChangeRef.current?.(newPos);
+            }
+          }
         })
       ],
     });
 
     viewRef.current = view;
+
+    // Report initial cursor position upon mount
+    const initialSelection = view.state.selection.main;
+    const initialLine = view.state.doc.lineAt(initialSelection.head);
+    const initialColumn = initialSelection.head - initialLine.from + 1;
+    const initialPos = { line: initialLine.number, column: initialColumn };
+    lastReportedCursorRef.current = initialPos;
+    onCursorPositionChangeRef.current?.(initialPos);
 
     return () => {
       view.destroy();
