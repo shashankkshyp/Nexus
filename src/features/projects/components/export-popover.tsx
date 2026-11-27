@@ -10,6 +10,7 @@ import {
   CheckCircle2Icon,
   ExternalLinkIcon,
   LoaderIcon,
+  CircleSlash2Icon,
   XCircleIcon,
 } from "lucide-react";
 
@@ -30,6 +31,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 import { useProject } from "../hooks/use-projects";
 
@@ -56,6 +67,8 @@ interface ExportPopoverProps {
 export const ExportPopover = ({ projectId }: ExportPopoverProps) => {
   const project = useProject(projectId);
   const [open, setOpen] = React.useState(false);
+  const [cancelConfirmationOpen, setCancelConfirmationOpen] = React.useState(false);
+  const [isCancelling, setIsCancelling] = React.useState(false);
   const { openUserProfile } = useClerk();
 
   const exportStatus = project?.exportStatus;
@@ -121,9 +134,20 @@ export const ExportPopover = ({ projectId }: ExportPopoverProps) => {
   }, [project?.name, form]);
 
   const handleCancelExport = async () => {
-    await ky.post("/api/github/export/cancel", {
-      json: { projectId },
-    });
+    if (isCancelling) return;
+
+    setIsCancelling(true);
+    try {
+      await ky.post("/api/github/export/cancel", {
+        json: { projectId },
+      });
+      setCancelConfirmationOpen(false);
+      toast.success("Export cancellation requested");
+    } catch {
+      toast.error("Unable to cancel export");
+    } finally {
+      setIsCancelling(false);
+    }
   };
 
   const handleResetExport = async () => {
@@ -140,38 +164,48 @@ export const ExportPopover = ({ projectId }: ExportPopoverProps) => {
   const renderContent = () => {
     if (exportStatus === "exporting") {
       const progress = project?.exportProgress;
-      const total = progress?.totalFiles ?? 0;
-      const processed = progress?.processedFiles ?? 0;
+      const total = progress?.totalFiles;
+      const processed = progress?.processedFiles;
       const percent =
-        total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
+        total !== undefined && total > 0 && processed !== undefined
+          ? Math.min(100, Math.round((processed / total) * 100))
+          : undefined;
+      const batchLabel =
+        progress?.currentBatch !== undefined && progress?.totalBatches !== undefined && progress.totalBatches > 0
+          ? `Uploading batch ${progress.currentBatch} of ${progress.totalBatches}`
+          : total === undefined || total === 0
+            ? "Preparing files for export..."
+            : "Uploading project files...";
 
       return (
         <div className="flex flex-col items-center gap-3 w-full">
           <LoaderIcon className="size-6 animate-spin text-muted-foreground" />
           <div className="flex flex-col items-center gap-1 w-full text-center">
             <p className="text-sm font-medium">Exporting to GitHub...</p>
-            {total > 0 ? (
+            <p className="text-xs text-muted-foreground">{batchLabel}</p>
+            {total !== undefined && total > 0 && processed !== undefined && percent !== undefined ? (
               <p className="text-xs text-muted-foreground">
                 {processed} / {total} files ({percent}%)
               </p>
             ) : (
-              <p className="text-xs text-muted-foreground">Preparing files...</p>
+              <p className="text-xs text-muted-foreground">Progress details will appear when available.</p>
             )}
           </div>
-          {total > 0 && <Progress value={percent} className="w-full h-1.5" />}
+          {percent !== undefined && <Progress value={percent} aria-label="Export progress" className="w-full h-1.5" />}
           <Button
             size="sm"
             variant="outline"
             className="w-full"
-            onClick={handleCancelExport}
+            onClick={() => setCancelConfirmationOpen(true)}
+            disabled={isCancelling}
           >
-            Cancel
+            {isCancelling ? "Cancelling..." : "Cancel export"}
           </Button>
         </div>
       );
     }
 
-    if (exportStatus === "completed" && exportRepoUrl) {
+    if (exportStatus === "completed") {
       return (
         <div className="flex flex-col items-center gap-3">
           <CheckCircle2Icon className="size-6 text-emerald-500" />
@@ -180,12 +214,14 @@ export const ExportPopover = ({ projectId }: ExportPopoverProps) => {
             Your project has been exported to GitHub.
           </p>
           <div className="flex flex-col w-full gap-2">
-            <Button size="sm" className="w-full" asChild>
-              <Link href={exportRepoUrl} target="_blank" rel="noopener noreferrer">
-                <ExternalLinkIcon className="size-4 mr-1" />
-                View on GitHub
-              </Link>
-            </Button>
+            {exportRepoUrl && (
+              <Button size="sm" className="w-full" asChild>
+                <Link href={exportRepoUrl} target="_blank" rel="noopener noreferrer">
+                  <ExternalLinkIcon className="size-4 mr-1" />
+                  View on GitHub
+                </Link>
+              </Button>
+            )}
             <Button
               size="sm"
               variant="outline"
@@ -220,6 +256,26 @@ export const ExportPopover = ({ projectId }: ExportPopoverProps) => {
             onClick={handleResetExport}
           >
             Retry
+          </Button>
+        </div>
+      );
+    }
+
+    if (exportStatus === "cancelled") {
+      return (
+        <div className="flex flex-col items-center gap-3 w-full">
+          <CircleSlash2Icon className="size-6 text-amber-500" />
+          <p className="text-sm font-medium">Export cancelled</p>
+          <p className="text-xs text-muted-foreground text-center">
+            The GitHub export was cancelled before it completed.
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-full"
+            onClick={handleResetExport}
+          >
+            Start a new export
           </Button>
         </div>
       );
@@ -349,11 +405,15 @@ export const ExportPopover = ({ projectId }: ExportPopoverProps) => {
     if (exportStatus === "failed") {
       return <XCircleIcon className="size-3.5 text-red-500" />;
     }
+    if (exportStatus === "cancelled") {
+      return <CircleSlash2Icon className="size-3.5 text-amber-500" />;
+    }
     return <FaGithub className="size-3.5" />;
   };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <>
+      <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <div className="flex items-center gap-1.5 h-full px-3 cursor-pointer text-muted-foreground border-l hover:bg-accent/30">
           {getStatusIcon()}
@@ -362,7 +422,29 @@ export const ExportPopover = ({ projectId }: ExportPopoverProps) => {
       </PopoverTrigger>
       <PopoverContent className="w-80" align="start">
         {renderContent()}
-      </PopoverContent>
-    </Popover>
+        </PopoverContent>
+      </Popover>
+      <AlertDialog open={cancelConfirmationOpen} onOpenChange={(nextOpen) => {
+        if (!isCancelling) setCancelConfirmationOpen(nextOpen);
+      }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancel GitHub export?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The export will stop and its current progress will be preserved as cancelled.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isCancelling}>Keep exporting</AlertDialogCancel>
+            <AlertDialogAction onClick={(event) => {
+              event.preventDefault();
+              void handleCancelExport();
+            }} disabled={isCancelling}>
+              {isCancelling ? "Cancelling..." : "Confirm cancellation"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 };
