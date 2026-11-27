@@ -4,7 +4,7 @@ import { AlertTriangleIcon, CheckIcon, RefreshCwIcon, SaveIcon, WrapTextIcon } f
 
 import { useFile, useUpdateFile } from "@/features/projects/hooks/use-files";
 
-import { CodeEditor } from "./code-editor";
+import { CodeEditor, type CursorPosition } from "./code-editor";
 import { useEditor } from "../hooks/use-editor";
 import { TopNavigation } from "./top-navigation";
 import { FileBreadcrumbs } from "./file-breadcrumbs";
@@ -39,7 +39,13 @@ export const EditorView = ({
   const activeFile = useFile(activeTabId);
   const updateFile = useUpdateFile();
   const [lineWrapping, setLineWrapping] = useState(false);
+  const [cursorPosition, setCursorPosition] = useState<CursorPosition>({ line: 1, column: 1 });
   const autosaveTimersRef = useRef<Map<Id<"files">, NodeJS.Timeout>>(new Map());
+
+  // Reset cursor position to Line 1, Column 1 when switching active tabs
+  useEffect(() => {
+    setCursorPosition({ line: 1, column: 1 });
+  }, [activeTabId]);
 
   // Cleanup all pending autosave timers on unmount or project change
   useEffect(() => {
@@ -202,6 +208,11 @@ export const EditorView = ({
               <CheckIcon className="size-3" /> Saved
             </span>
           )}
+          {isActiveFileText && (
+            <span className="text-muted-foreground select-none" data-testid="editor-cursor-position">
+              Ln {cursorPosition.line}, Col {cursorPosition.column}
+            </span>
+          )}
         </div>
       </div>
 
@@ -258,6 +269,7 @@ export const EditorView = ({
             onSave={handleManualSave}
             conversationId={conversationId}
             onSelectedCode={onSelectedCode}
+            onCursorPositionChange={setCursorPosition}
           />
         )}
         {isActiveFileBinary && (

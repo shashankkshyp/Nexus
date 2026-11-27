@@ -12,34 +12,49 @@ vi.mock("@/features/editor/components/file-breadcrumbs", () => ({
   FileBreadcrumbs: () => <div data-testid="file-breadcrumbs" />,
 }));
 
-// Mock CodeEditor so we can trigger onChange and onSave directly from tests
+// Mock CodeEditor so we can trigger onChange, onSave, and onCursorPositionChange directly from tests
 vi.mock("@/features/editor/components/code-editor", () => ({
   CodeEditor: ({
     fileName,
     lineWrapping,
     onChange,
     onSave,
+    onCursorPositionChange,
   }: {
     fileName: string;
     initialValue?: string;
     lineWrapping?: boolean;
     onChange: (value: string) => void;
     onSave?: () => void;
-  }) => (
-    <div
-      data-testid="mock-code-editor"
-      data-filename={fileName}
-      data-linewrapping={lineWrapping ? "true" : "false"}
-    >
-      <input
-        data-testid="editor-input"
-        onChange={(e) => onChange(e.target.value)}
-      />
-      <button data-testid="manual-save-btn" onClick={() => onSave?.()}>
-        Manual Save
-      </button>
-    </div>
-  ),
+    onCursorPositionChange?: (position: { line: number; column: number }) => void;
+  }) => {
+    // Report initial cursor position upon render
+    React.useEffect(() => {
+      onCursorPositionChange?.({ line: 1, column: 1 });
+    }, [onCursorPositionChange]);
+
+    return (
+      <div
+        data-testid="mock-code-editor"
+        data-filename={fileName}
+        data-linewrapping={lineWrapping ? "true" : "false"}
+      >
+        <input
+          data-testid="editor-input"
+          onChange={(e) => onChange(e.target.value)}
+        />
+        <button data-testid="manual-save-btn" onClick={() => onSave?.()}>
+          Manual Save
+        </button>
+        <button
+          data-testid="mock-move-cursor-btn"
+          onClick={() => onCursorPositionChange?.({ line: 5, column: 12 })}
+        >
+          Move Cursor
+        </button>
+      </div>
+    );
+  },
 }));
 
 // Files repository mock
@@ -674,7 +689,7 @@ describe("EditorView - Visible Save Control in Status Bar (Issue #77)", () => {
 });
 
 import { EditorView as CMEditorView } from "@codemirror/view";
-import { EditorState as CMEditorState, Compartment } from "@codemirror/state";
+import { EditorState as CMEditorState, EditorSelection, Compartment } from "@codemirror/state";
 import { suggestion } from "@/features/editor/extensions/suggestion";
 import { quickEdit, showQuickEditEffect, quickEditState } from "@/features/editor/extensions/quick-edit";
 import * as suggestionFetcherModule from "@/features/editor/extensions/suggestion/fetcher";
@@ -1146,6 +1161,270 @@ describe("CodeMirror Extensions - Tab AI State Isolation (Issue #66)", () => {
       // File should not be dirty and mockUpdateFile should not have been called
       expect(useEditorStore.getState().isFileDirty(projectId, fileA)).toBe(false);
       expect(mockUpdateFile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Active Line and Column in Status Bar (Issue #109)", () => {
+    const projectId = "proj_1" as Id<"projects">;
+    const fileA = "file_a" as Id<"files">;
+    const fileB = "file_b" as Id<"files">;
+
+    beforeEach(() => {
+      useEditorStore.setState({ tabs: new Map() });
+      const store = useEditorStore.getState();
+      store.openFile(projectId, fileA, { pinned: true, initialContent: "hello world", updatedAt: 100 });
+      store.openFile(projectId, fileB, { pinned: true, initialContent: "another file", updatedAt: 100 });
+      store.setActiveTab(projectId, fileA);
+    });
+
+    // Test 1 — Initial cursor position
+    it("Test 1 — Initial cursor position: CodeMirror EditorView reports Ln 1, Col 1 for initial/empty document", () => {
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+
+      let reportedPosition: { line: number; column: number } | null = null;
+      const onCursorPositionChange = (pos: { line: number; column: number }) => {
+        reportedPosition = pos;
+      };
+
+      const updateListener = CMEditorView.updateListener.of((update) => {
+        if (update.selectionSet || update.docChanged) {
+          const selection = update.state.selection.main;
+          const line = update.state.doc.lineAt(selection.head);
+          const column = selection.head - line.from + 1;
+          onCursorPositionChange({ line: line.number, column });
+        }
+      });
+
+      const view = new CMEditorView({
+        state: CMEditorState.create({
+          doc: "",
+          extensions: [updateListener],
+        }),
+        parent: container,
+      });
+
+      // Initial report logic upon mount
+      const sel = view.state.selection.main;
+      const line = view.state.doc.lineAt(sel.head);
+      const column = sel.head - line.from + 1;
+      onCursorPositionChange({ line: line.number, column });
+
+      expect(reportedPosition).toEqual({ line: 1, column: 1 });
+
+      view.destroy();
+      container.remove();
+    });
+
+    // Test 2 — Cursor movement
+    it("Test 2 — Cursor movement: moving cursor updates position with 1-based line and column", () => {
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+
+      let reportedPosition: { line: number; column: number } | null = null;
+      const updateListener = CMEditorView.updateListener.of((update) => {
+        if (update.selectionSet || update.docChanged) {
+          const selection = update.state.selection.main;
+          const line = update.state.doc.lineAt(selection.head);
+          const column = selection.head - line.from + 1;
+          reportedPosition = { line: line.number, column };
+        }
+      });
+
+      const multilineDoc = "first line\nsecond line here\nthird line";
+      const view = new CMEditorView({
+        state: CMEditorState.create({
+          doc: multilineDoc,
+          extensions: [updateListener],
+        }),
+        parent: container,
+      });
+
+      // Move cursor to "second line here", index of 'line' on line 2
+      // line 1 is 10 chars + 1 newline = 11 chars. "second " is 7 chars. 11 + 7 = 18.
+      view.dispatch({
+        selection: { anchor: 18, head: 18 },
+      });
+
+      expect(reportedPosition).toEqual({ line: 2, column: 8 });
+
+      view.destroy();
+      container.remove();
+    });
+
+    // Test 3 — Document edits
+    it("Test 3 — Document edits: typing and deleting characters updates the reported cursor position", () => {
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+
+      let reportedPosition: { line: number; column: number } | null = null;
+      const updateListener = CMEditorView.updateListener.of((update) => {
+        if (update.selectionSet || update.docChanged) {
+          const selection = update.state.selection.main;
+          const line = update.state.doc.lineAt(selection.head);
+          const column = selection.head - line.from + 1;
+          reportedPosition = { line: line.number, column };
+        }
+      });
+
+      const view = new CMEditorView({
+        state: CMEditorState.create({
+          doc: "abc",
+          extensions: [updateListener],
+        }),
+        parent: container,
+      });
+
+      // Insert newline and text
+      view.dispatch({
+        changes: { from: 3, insert: "\ndef" },
+        selection: { anchor: 7 }, // at end of 'def'
+      });
+
+      expect(reportedPosition).toEqual({ line: 2, column: 4 });
+
+      // Delete two characters
+      view.dispatch({
+        changes: { from: 5, to: 7 },
+        selection: { anchor: 5 },
+      });
+
+      expect(reportedPosition).toEqual({ line: 2, column: 2 });
+
+      view.destroy();
+      container.remove();
+    });
+
+    // Test 4 — Multiple selections
+    it("Test 4 — Multiple selections: reports primary cursor position from selection.main.head", () => {
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+
+      let reportedPosition: { line: number; column: number } | null = null;
+      const updateListener = CMEditorView.updateListener.of((update) => {
+        if (update.selectionSet || update.docChanged) {
+          const selection = update.state.selection.main;
+          const line = update.state.doc.lineAt(selection.head);
+          const column = selection.head - line.from + 1;
+          reportedPosition = { line: line.number, column };
+        }
+      });
+
+      const view = new CMEditorView({
+        state: CMEditorState.create({
+          doc: "line one\nline two\nline three",
+          extensions: [updateListener],
+        }),
+        parent: container,
+      });
+
+      // Dispatch multiple selection ranges (main is range at index 0 or specified mainIndex)
+      view.dispatch({
+        selection: EditorSelection.create([
+          EditorSelection.cursor(14), // on line 2 (line 1: 8 chars + 1 = 9; 9 + 5 = 14 -> line 2, col 6)
+          EditorSelection.cursor(0),  // on line 1
+        ], 0),
+      });
+
+      expect(reportedPosition).toEqual({ line: 2, column: 6 });
+
+      view.destroy();
+      container.remove();
+    });
+
+    // Test 5 — Active tab reset
+    it("Test 5 — Active tab reset: switching active file resets cursor status to Ln 1, Col 1 and shows new editor position", () => {
+      const { rerender } = render(<EditorView projectId={projectId} />);
+
+      // Initial fileA status row shows Ln 1, Col 1
+      const statusEl = screen.getByTestId("editor-cursor-position");
+      expect(statusEl.textContent).toBe("Ln 1, Col 1");
+
+      // Move cursor in fileA
+      act(() => {
+        fireEvent.click(screen.getByTestId("mock-move-cursor-btn"));
+      });
+      expect(screen.getByTestId("editor-cursor-position").textContent).toBe("Ln 5, Col 12");
+
+      // Switch to fileB
+      act(() => {
+        useEditorStore.getState().setActiveTab(projectId, fileB);
+      });
+      rerender(<EditorView projectId={projectId} />);
+
+      // On tab switch, cursor position is reset and reports fileB's position (Ln 1, Col 1)
+      expect(screen.getByTestId("editor-cursor-position").textContent).toBe("Ln 1, Col 1");
+    });
+
+    // Test 6 — Remote document replacement
+    it("Test 6 — Remote document replacement: document replacement causes cursor-position reporting to reflect updated state", () => {
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+
+      let reportedPosition: { line: number; column: number } | null = null;
+      const updateListener = CMEditorView.updateListener.of((update) => {
+        if (update.selectionSet || update.docChanged) {
+          const selection = update.state.selection.main;
+          const line = update.state.doc.lineAt(selection.head);
+          const column = selection.head - line.from + 1;
+          reportedPosition = { line: line.number, column };
+        }
+      });
+
+      const view = new CMEditorView({
+        state: CMEditorState.create({
+          doc: "original short",
+          extensions: [updateListener],
+        }),
+        parent: container,
+      });
+
+      // Replace document completely (as happens in external/remote sync)
+      const newContent = "alpha\nbeta\ngamma";
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: newContent },
+        selection: { anchor: newContent.length }, // placed at end of "gamma"
+      });
+
+      expect(reportedPosition).toEqual({ line: 3, column: 6 });
+
+      view.destroy();
+      container.remove();
+    });
+
+    // Test 7 — Autosave independence
+    it("Test 7 — Autosave independence: cursor movement or cursor-position change does not schedule autosave", () => {
+      render(<EditorView projectId={projectId} />);
+
+      // Cursor moves
+      act(() => {
+        fireEvent.click(screen.getByTestId("mock-move-cursor-btn"));
+      });
+      expect(screen.getByTestId("editor-cursor-position").textContent).toBe("Ln 5, Col 12");
+
+      // Advance timers by 3000ms
+      act(() => {
+        vi.advanceTimersByTime(3000);
+      });
+
+      // No autosave triggered, file remains clean
+      expect(mockUpdateFile).not.toHaveBeenCalled();
+      expect(useEditorStore.getState().isFileDirty(projectId, fileA)).toBe(false);
+
+      // Normal edit DOES trigger autosave
+      act(() => {
+        fireEvent.change(screen.getByTestId("editor-input"), { target: { value: "edited text" } });
+      });
+      expect(useEditorStore.getState().isFileDirty(projectId, fileA)).toBe(true);
+
+      act(() => {
+        vi.advanceTimersByTime(1500);
+      });
+      expect(mockUpdateFile).toHaveBeenCalledTimes(1);
+      expect(mockUpdateFile).toHaveBeenCalledWith({
+        id: fileA,
+        content: "edited text",
+      });
     });
   });
 });
