@@ -45,6 +45,7 @@ vi.mock("@/features/editor/hooks/use-editor", () => ({
 
 import { FileExplorer } from "@/features/projects/components/file-explorer/index";
 import { Tree } from "@/features/projects/components/file-explorer/tree";
+import { TreeItemWrapper } from "@/features/projects/components/file-explorer/tree-item-wrapper";
 import { Doc, Id } from "@/../convex/_generated/dataModel";
 
 describe("FileExplorer header action buttons accessibility", () => {
@@ -125,6 +126,7 @@ describe("File and folder context menu Copy Path action", () => {
 
     expect(screen.getByRole("menuitem", { name: /Copy Path/i })).toBeDefined();
     expect(screen.getByRole("menuitem", { name: /Rename/i })).toBeDefined();
+    expect(screen.getByText("F2")).toBeDefined();
     expect(screen.getByRole("menuitem", { name: /Delete Permanently/i })).toBeDefined();
   });
 
@@ -145,6 +147,7 @@ describe("File and folder context menu Copy Path action", () => {
     expect(screen.getByRole("menuitem", { name: /New File/i })).toBeDefined();
     expect(screen.getByRole("menuitem", { name: /New Folder/i })).toBeDefined();
     expect(screen.getByRole("menuitem", { name: /Rename/i })).toBeDefined();
+    expect(screen.getByText("F2")).toBeDefined();
     expect(screen.getByRole("menuitem", { name: /Delete Permanently/i })).toBeDefined();
   });
 
@@ -651,5 +654,252 @@ describe("FileExplorer Expand All and Collapse All recursive functionality (Issu
     // Collapse again
     fireEvent.click(collapseBtn);
     expect(screen.getByText("empty_dir")).toBeDefined();
+  });
+});
+
+describe("File explorer keyboard activation and rename behavior (Issue #107)", () => {
+  const projectId = "proj_123" as Id<"projects">;
+
+  const mockFileItem: Doc<"files"> = {
+    _id: "file_test_107" as Id<"files">,
+    _creationTime: 1000,
+    projectId,
+    name: "index.ts",
+    type: "file",
+    content: "console.log('hello');",
+    updatedAt: 1000,
+  };
+
+  const mockFolderItem: Doc<"files"> = {
+    _id: "folder_test_107" as Id<"files">,
+    _creationTime: 1000,
+    projectId,
+    name: "src",
+    type: "folder",
+    updatedAt: 1000,
+  };
+
+  const childFileItem: Doc<"files"> = {
+    _id: "file_child_107" as Id<"files">,
+    _creationTime: 1001,
+    projectId,
+    name: "child.ts",
+    type: "file",
+    parentId: "folder_test_107" as Id<"files">,
+    updatedAt: 1001,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFilePathResult = undefined;
+    mockFolderContentsHandler = null;
+  });
+
+  it("File Enter activation: invokes onClick exactly once and does not enter rename mode", () => {
+    const onClick = vi.fn();
+    const onRename = vi.fn();
+
+    render(
+      <TreeItemWrapper
+        item={mockFileItem}
+        level={0}
+        onClick={onClick}
+        onRename={onRename}
+      >
+        <span>index.ts</span>
+      </TreeItemWrapper>
+    );
+
+    const button = screen.getByRole("button", { name: "index.ts" });
+    button.focus();
+
+    fireEvent.keyDown(button, { key: "Enter" });
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(onRename).not.toHaveBeenCalled();
+  });
+
+  it("Folder Enter activation: invokes onClick exactly once and does not initiate rename", () => {
+    const onClick = vi.fn();
+    const onRename = vi.fn();
+
+    render(
+      <TreeItemWrapper
+        item={mockFolderItem}
+        level={0}
+        onClick={onClick}
+        onRename={onRename}
+      >
+        <span>src</span>
+      </TreeItemWrapper>
+    );
+
+    const button = screen.getByRole("button", { name: "src" });
+    button.focus();
+
+    fireEvent.keyDown(button, { key: "Enter" });
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(onRename).not.toHaveBeenCalled();
+  });
+
+  it("Repeated folder Enter: toggles folder expansion correctly on each Enter press via Tree", async () => {
+    mockFolderContentsHandler = ({ parentId, enabled }) => {
+      if (!enabled) return undefined;
+      if (parentId === "folder_test_107") return [childFileItem];
+      return [];
+    };
+
+    render(<Tree item={mockFolderItem} projectId={projectId} />);
+
+    const folderButton = screen.getByRole("button", { name: /src/i });
+    folderButton.focus();
+
+    // Initially collapsed
+    expect(screen.queryByText("child.ts")).toBeNull();
+
+    // First Enter -> Expands folder
+    fireEvent.keyDown(folderButton, { key: "Enter" });
+    await waitFor(() => {
+      expect(screen.getByText("child.ts")).toBeDefined();
+    });
+
+    // Second Enter -> Collapses folder
+    fireEvent.keyDown(folderButton, { key: "Enter" });
+    await waitFor(() => {
+      expect(screen.queryByText("child.ts")).toBeNull();
+    });
+
+    // Third Enter -> Expands folder again
+    fireEvent.keyDown(folderButton, { key: "Enter" });
+    await waitFor(() => {
+      expect(screen.getByText("child.ts")).toBeDefined();
+    });
+  });
+
+  it("F2 rename: initiates rename for a file row and for a folder row", () => {
+    const onRenameFile = vi.fn();
+    const onClickFile = vi.fn();
+
+    const { unmount } = render(
+      <TreeItemWrapper
+        item={mockFileItem}
+        level={0}
+        onClick={onClickFile}
+        onRename={onRenameFile}
+      >
+        <span>index.ts</span>
+      </TreeItemWrapper>
+    );
+
+    const fileButton = screen.getByRole("button", { name: "index.ts" });
+    fileButton.focus();
+
+    fireEvent.keyDown(fileButton, { key: "F2" });
+
+    expect(onRenameFile).toHaveBeenCalledTimes(1);
+    expect(onClickFile).not.toHaveBeenCalled();
+
+    unmount();
+
+    const onRenameFolder = vi.fn();
+    const onClickFolder = vi.fn();
+
+    render(
+      <TreeItemWrapper
+        item={mockFolderItem}
+        level={0}
+        onClick={onClickFolder}
+        onRename={onRenameFolder}
+      >
+        <span>src</span>
+      </TreeItemWrapper>
+    );
+
+    const folderButton = screen.getByRole("button", { name: "src" });
+    folderButton.focus();
+
+    fireEvent.keyDown(folderButton, { key: "F2" });
+
+    expect(onRenameFolder).toHaveBeenCalledTimes(1);
+    expect(onClickFolder).not.toHaveBeenCalled();
+  });
+
+  it("Space native activation: preserves native button activation without duplicate invocation", () => {
+    const onClick = vi.fn();
+    const onRename = vi.fn();
+
+    render(
+      <TreeItemWrapper
+        item={mockFileItem}
+        level={0}
+        onClick={onClick}
+        onRename={onRename}
+      >
+        <span>index.ts</span>
+      </TreeItemWrapper>
+    );
+
+    const button = screen.getByRole("button", { name: "index.ts" });
+    button.focus();
+
+    // Trigger Space keydown
+    fireEvent.keyDown(button, { key: " " });
+    // In browser/JSDOM, pressing Space on a native button triggers click.
+    fireEvent.click(button);
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(onRename).not.toHaveBeenCalled();
+  });
+
+  it("Inline rename protection: F2 or Enter inside inline rename input does not trigger row rename or activation", () => {
+    const onClick = vi.fn();
+    const onRename = vi.fn();
+
+    render(
+      <TreeItemWrapper
+        item={mockFileItem}
+        level={0}
+        onClick={onClick}
+        onRename={onRename}
+      >
+        <input data-testid="nested-input" defaultValue="index.ts" />
+      </TreeItemWrapper>
+    );
+
+    const input = screen.getByTestId("nested-input");
+    input.focus();
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onClick).not.toHaveBeenCalled();
+    expect(onRename).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(input, { key: "F2" });
+    expect(onClick).not.toHaveBeenCalled();
+    expect(onRename).not.toHaveBeenCalled();
+  });
+
+  it("Context-menu Rename: displays F2 shortcut label and triggers rename on click", () => {
+    const onRename = vi.fn();
+
+    render(
+      <TreeItemWrapper
+        item={mockFileItem}
+        level={0}
+        onRename={onRename}
+      >
+        <span>index.ts</span>
+      </TreeItemWrapper>
+    );
+
+    const button = screen.getByRole("button", { name: "index.ts" });
+    fireEvent.contextMenu(button);
+
+    const renameItem = screen.getByRole("menuitem", { name: /Rename/i });
+    expect(renameItem).toBeDefined();
+    expect(screen.getByText("F2")).toBeDefined();
+
+    fireEvent.click(renameItem);
+    expect(onRename).toHaveBeenCalledTimes(1);
   });
 });
