@@ -101,7 +101,7 @@ describe("ConversationSidebar header action buttons accessibility", () => {
 
     const button = screen.getByRole("button", { name: "New conversation" });
     expect(button.getAttribute("aria-label")).toBe("New conversation");
-    expect(button.getAttribute("title")).toBe("New conversation");
+    expect(button.getAttribute("title")).toBe("New conversation (Ctrl+Shift+N / Cmd+Shift+N)");
   });
 
   it("Test 5 — Past Conversations click behavior opens dialog", () => {
@@ -913,5 +913,274 @@ describe("ConversationSidebar Regenerate latest assistant response (Issue #100)"
 
     // Previous assistant answer remains visible
     expect(screen.getByText("Existing assistant response that must remain")).toBeDefined();
+  });
+});
+
+describe("ConversationSidebar - Ctrl/Cmd+Shift+N New Conversation Shortcut (Issue #110)", () => {
+  const projectId = "proj_1" as Id<"projects">;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConversations = [{ _id: "conv_1", title: "First Conversation", _creationTime: Date.now() - 60000 }];
+    mockCreateConversation.mockResolvedValue("conv_new_999");
+  });
+
+  // Test 1 — Windows/Linux shortcut
+  it("Test 1 — Windows/Linux shortcut: Ctrl+Shift+N triggers creation and selects the new conversation", async () => {
+    mockCreateConversation.mockImplementation(async () => {
+      mockConversations.unshift({ _id: "conv_new_999", title: "New conversation", _creationTime: Date.now() });
+      return "conv_new_999";
+    });
+
+    let activeConversationId: string | null = null;
+    render(
+      <ConversationSidebar
+        projectId={projectId}
+        onActiveConversationChange={(id) => {
+          activeConversationId = id;
+        }}
+      />
+    );
+
+    fireEvent.keyDown(window, {
+      key: "N",
+      ctrlKey: true,
+      shiftKey: true,
+      metaKey: false,
+    });
+
+    await waitFor(() => {
+      expect(mockCreateConversation).toHaveBeenCalledTimes(1);
+      expect(mockCreateConversation).toHaveBeenCalledWith({
+        projectId: "proj_1",
+        title: "New conversation",
+      });
+      expect(activeConversationId).toBe("conv_new_999");
+    });
+  });
+
+  // Test 2 — macOS shortcut
+  it("Test 2 — macOS shortcut: Cmd+Shift+N triggers creation and selects the new conversation", async () => {
+    mockCreateConversation.mockImplementation(async () => {
+      mockConversations.unshift({ _id: "conv_new_999", title: "New conversation", _creationTime: Date.now() });
+      return "conv_new_999";
+    });
+
+    let activeConversationId: string | null = null;
+    render(
+      <ConversationSidebar
+        projectId={projectId}
+        onActiveConversationChange={(id) => {
+          activeConversationId = id;
+        }}
+      />
+    );
+
+    fireEvent.keyDown(window, {
+      key: "n",
+      metaKey: true,
+      shiftKey: true,
+      ctrlKey: false,
+    });
+
+    await waitFor(() => {
+      expect(mockCreateConversation).toHaveBeenCalledTimes(1);
+      expect(mockCreateConversation).toHaveBeenCalledWith({
+        projectId: "proj_1",
+        title: "New conversation",
+      });
+      expect(activeConversationId).toBe("conv_new_999");
+    });
+  });
+
+  // Test 3 — Shortcut registration and cleanup
+  it("Test 3 — Shortcut registration and cleanup: cleans up window listener upon unmount", () => {
+    const { unmount } = render(<ConversationSidebar projectId={projectId} />);
+
+    unmount();
+
+    fireEvent.keyDown(window, {
+      key: "N",
+      ctrlKey: true,
+      shiftKey: true,
+    });
+
+    expect(mockCreateConversation).not.toHaveBeenCalled();
+  });
+
+  // Test 4 — Editable target filtering
+  it("Test 4 — Editable target filtering: does not create conversation when typing in input, textarea, select, contenteditable, or CodeMirror", () => {
+    render(<ConversationSidebar projectId={projectId} />);
+
+    // 1. Regular input
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    fireEvent.keyDown(input, { key: "N", ctrlKey: true, shiftKey: true });
+    expect(mockCreateConversation).not.toHaveBeenCalled();
+    input.remove();
+
+    // 2. Textarea (including prompt textarea)
+    const textarea = screen.getByPlaceholderText("Ask Nexus anything...");
+    fireEvent.keyDown(textarea, { key: "N", ctrlKey: true, shiftKey: true });
+    expect(mockCreateConversation).not.toHaveBeenCalled();
+
+    // 3. Select element
+    const select = document.createElement("select");
+    document.body.appendChild(select);
+    fireEvent.keyDown(select, { key: "N", ctrlKey: true, shiftKey: true });
+    expect(mockCreateConversation).not.toHaveBeenCalled();
+    select.remove();
+
+    // 4. Contenteditable element
+    const ce = document.createElement("div");
+    ce.contentEditable = "true";
+    ce.setAttribute("contenteditable", "true");
+    document.body.appendChild(ce);
+    fireEvent.keyDown(ce, { key: "N", ctrlKey: true, shiftKey: true });
+    expect(mockCreateConversation).not.toHaveBeenCalled();
+    ce.remove();
+
+    // 5. CodeMirror element
+    const cmEditor = document.createElement("div");
+    cmEditor.className = "cm-editor";
+    const cmContent = document.createElement("div");
+    cmContent.className = "cm-content";
+    cmEditor.appendChild(cmContent);
+    document.body.appendChild(cmEditor);
+    fireEvent.keyDown(cmContent, { key: "N", ctrlKey: true, shiftKey: true });
+    expect(mockCreateConversation).not.toHaveBeenCalled();
+    cmEditor.remove();
+  });
+
+  // Test 5 — Duplicate suppression
+  it("Test 5 — Duplicate suppression: prevents concurrent creation while a previous mutation is in flight", async () => {
+    let resolveCreate: (val: string) => void = () => {};
+    mockCreateConversation.mockImplementation(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveCreate = resolve;
+        })
+    );
+
+    render(<ConversationSidebar projectId={projectId} />);
+
+    // Press shortcut multiple times rapidly
+    fireEvent.keyDown(window, { key: "N", ctrlKey: true, shiftKey: true });
+    fireEvent.keyDown(window, { key: "N", ctrlKey: true, shiftKey: true });
+    fireEvent.keyDown(window, { key: "N", ctrlKey: true, shiftKey: true });
+
+    // Click button rapidly while in-flight
+    const newBtn = screen.getByRole("button", { name: "New conversation" });
+    fireEvent.click(newBtn);
+    fireEvent.click(newBtn);
+
+    expect(mockCreateConversation).toHaveBeenCalledTimes(1);
+
+    // Resolve the creation
+    resolveCreate("conv_resolved_1");
+    await waitFor(() => {
+      expect(mockCreateConversation).toHaveBeenCalledTimes(1);
+    });
+
+    // Subsequent press after resolution should now succeed
+    fireEvent.keyDown(window, { key: "N", ctrlKey: true, shiftKey: true });
+    expect(mockCreateConversation).toHaveBeenCalledTimes(2);
+  });
+
+  // Test 6 — Button and shortcut parity
+  it("Test 6 — Button and shortcut parity: both use the identical creation handler and update active conversation", async () => {
+    mockCreateConversation.mockImplementation(async () => {
+      mockConversations.unshift({ _id: "conv_new_999", title: "New conversation", _creationTime: Date.now() });
+      return "conv_new_999";
+    });
+
+    let activeConversationId: string | null = null;
+    render(
+      <ConversationSidebar
+        projectId={projectId}
+        onActiveConversationChange={(id) => {
+          activeConversationId = id;
+        }}
+      />
+    );
+
+    // Click button
+    const newBtn = screen.getByRole("button", { name: "New conversation" });
+    fireEvent.click(newBtn);
+
+    await waitFor(() => {
+      expect(mockCreateConversation).toHaveBeenCalledTimes(1);
+      expect(activeConversationId).toBe("conv_new_999");
+    });
+  });
+
+  // Test 7 — No active project
+  it("Test 7 — No active project: does not invoke mutation if projectId is missing", () => {
+    render(
+      <ConversationSidebar
+        projectId={"" as Id<"projects">}
+      />
+    );
+
+    fireEvent.keyDown(window, { key: "N", ctrlKey: true, shiftKey: true });
+    expect(mockCreateConversation).not.toHaveBeenCalled();
+  });
+
+  // Test 8 — Mutation failure
+  it("Test 8 — Mutation failure: releases guard so subsequent attempts succeed after error toast", async () => {
+    mockCreateConversation.mockRejectedValueOnce(new Error("Database error"));
+    mockCreateConversation.mockImplementationOnce(async () => {
+      mockConversations.unshift({ _id: "conv_recovered_123", title: "New conversation", _creationTime: Date.now() });
+      return "conv_recovered_123";
+    });
+
+    let activeConversationId: string | null = null;
+    render(
+      <ConversationSidebar
+        projectId={projectId}
+        onActiveConversationChange={(id) => {
+          activeConversationId = id;
+        }}
+      />
+    );
+
+    // First attempt fails
+    fireEvent.keyDown(window, { key: "N", ctrlKey: true, shiftKey: true });
+
+    await waitFor(() => {
+      expect(mockCreateConversation).toHaveBeenCalledTimes(1);
+      expect(toast.error).toHaveBeenCalledWith("Unable to create new conversation");
+      // Does not select a phantom active conversation
+      expect(activeConversationId).toBe("conv_1");
+    });
+
+    // Guard must be released so second attempt succeeds
+    fireEvent.keyDown(window, { key: "N", ctrlKey: true, shiftKey: true });
+
+    await waitFor(() => {
+      expect(mockCreateConversation).toHaveBeenCalledTimes(2);
+      expect(activeConversationId).toBe("conv_recovered_123");
+    });
+  });
+
+  // Test 9 — Unrelated keyboard events
+  it("Test 9 — Unrelated keyboard events: does not trigger creation on Ctrl+N or Shift+N or other keys", () => {
+    render(<ConversationSidebar projectId={projectId} />);
+
+    // Just Ctrl+N (without Shift)
+    fireEvent.keyDown(window, { key: "N", ctrlKey: true, shiftKey: false });
+    expect(mockCreateConversation).not.toHaveBeenCalled();
+
+    // Just Shift+N (without Ctrl/Meta)
+    fireEvent.keyDown(window, { key: "N", ctrlKey: false, shiftKey: true });
+    expect(mockCreateConversation).not.toHaveBeenCalled();
+
+    // Both Ctrl and Meta simultaneously
+    fireEvent.keyDown(window, { key: "N", ctrlKey: true, metaKey: true, shiftKey: true });
+    expect(mockCreateConversation).not.toHaveBeenCalled();
+
+    // Unrelated key with Ctrl+Shift
+    fireEvent.keyDown(window, { key: "P", ctrlKey: true, shiftKey: true });
+    expect(mockCreateConversation).not.toHaveBeenCalled();
   });
 });
