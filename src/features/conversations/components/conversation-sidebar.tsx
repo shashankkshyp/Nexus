@@ -190,10 +190,20 @@ export const ConversationSidebar = ({
     }
   };
 
+  const isCreatingRef = useRef(false);
+  const projectIdRef = useRef(projectId);
+  useEffect(() => {
+    projectIdRef.current = projectId;
+  }, [projectId]);
+
   const handleCreateConversation = async () => {
+    if (isCreatingRef.current) return null;
+    if (!projectIdRef.current) return null;
+
+    isCreatingRef.current = true;
     try {
       const newConversationId = await createConversation({
-        projectId,
+        projectId: projectIdRef.current,
         title: DEFAULT_CONVERSATION_TITLE,
       });
       setSelectedConversationId(newConversationId);
@@ -201,8 +211,54 @@ export const ConversationSidebar = ({
     } catch {
       toast.error("Unable to create new conversation");
       return null;
+    } finally {
+      isCreatingRef.current = false;
     }
   };
+
+  const handleCreateConversationRef = useRef(handleCreateConversation);
+  useEffect(() => {
+    handleCreateConversationRef.current = handleCreateConversation;
+  });
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Must be Ctrl+Shift+N or Cmd+Shift+N (case-insensitive for 'n' / 'N')
+      const isMac = e.metaKey && !e.ctrlKey;
+      const isWinLinux = e.ctrlKey && !e.metaKey;
+      if ((isMac || isWinLinux) && e.shiftKey && (e.key === "n" || e.key === "N" || e.code === "KeyN")) {
+        // Exclude editable targets
+        const target = e.target as Element | null;
+        if (target && typeof target.closest === "function") {
+          const tagName = target.tagName?.toLowerCase();
+          if (tagName === "input" || tagName === "textarea" || tagName === "select") {
+            return;
+          }
+          const htmlTarget = target as HTMLElement;
+          if (
+            htmlTarget.isContentEditable ||
+            htmlTarget.contentEditable === "true" ||
+            htmlTarget.getAttribute?.("contenteditable") === "true" ||
+            htmlTarget.closest?.("[contenteditable='true']") ||
+            htmlTarget.closest?.("[contenteditable='']")
+          ) {
+            return;
+          }
+          if (target.closest(".cm-editor") || target.closest(".cm-content")) {
+            return;
+          }
+        }
+
+        e.preventDefault();
+        handleCreateConversationRef.current();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
 
   const handleSubmit = async (message: PromptInputMessage) => {
     const trimmedMessage = message.text.trim();
@@ -274,7 +330,7 @@ export const ConversationSidebar = ({
               size="icon-xs"
               variant="highlight"
               aria-label="New conversation"
-              title="New conversation"
+              title="New conversation (Ctrl+Shift+N / Cmd+Shift+N)"
               onClick={handleCreateConversation}
             >
               <PlusIcon className="size-3.5" />
