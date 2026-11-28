@@ -26,6 +26,51 @@ const font = Poppins({
   weight: ["400", "500", "600", "700"],
 });
 
+export const isEditableElement = (target: EventTarget | null): boolean => {
+  if (!target || !(target instanceof Element)) {
+    return false;
+  }
+
+  const tagName = target.tagName.toLowerCase();
+  if (tagName === "input" || tagName === "textarea" || tagName === "select") {
+    return true;
+  }
+
+  const htmlElement = target as HTMLElement;
+  if (
+    htmlElement.isContentEditable ||
+    htmlElement.contentEditable === "true" ||
+    htmlElement.contentEditable === "" ||
+    htmlElement.getAttribute?.("contenteditable") === "true" ||
+    htmlElement.getAttribute?.("contenteditable") === ""
+  ) {
+    return true;
+  }
+
+  if (
+    target.closest?.("[contenteditable='true']") !== null &&
+    target.closest?.("[contenteditable='true']") !== undefined
+  ) {
+    return true;
+  }
+
+  if (
+    target.closest?.("[contenteditable='']") !== null &&
+    target.closest?.("[contenteditable='']") !== undefined
+  ) {
+    return true;
+  }
+
+  if (
+    target.closest?.("[contenteditable]:not([contenteditable='false'])") !== null &&
+    target.closest?.("[contenteditable]:not([contenteditable='false'])") !== undefined
+  ) {
+    return true;
+  }
+
+  return false;
+};
+
 export const ProjectsView = () => {
   const createProject = useCreateProject();
 
@@ -36,6 +81,10 @@ export const ProjectsView = () => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey) {
+        if (isEditableElement(e.target)) {
+          return;
+        }
+
         if (e.key === "k") {
           e.preventDefault();
           setCommandDialogOpen(true);

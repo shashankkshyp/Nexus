@@ -199,4 +199,152 @@ describe("ProjectsView keyboard shortcuts", () => {
     expect(removeEventListenerSpy).toHaveBeenCalledWith("keydown", expect.any(Function));
     removeEventListenerSpy.mockRestore();
   });
+
+  describe("Issue #115 — Ignore editable fields when handling project keyboard shortcuts", () => {
+    const shortcuts = [
+      { key: "k", name: "Command search (Ctrl/Cmd+K)", flag: () => mockCommandDialogOpen, dialogId: "dialog-command" },
+      { key: "i", name: "Import GitHub (Ctrl/Cmd+I)", flag: () => mockImportDialogOpen, dialogId: "dialog-import" },
+      { key: "j", name: "New Project (Ctrl/Cmd+J)", flag: () => mockNewProjectDialogOpen, dialogId: "dialog-new-project" },
+    ];
+
+    describe.each(shortcuts)("Shortcut Ctrl/Cmd+$key ($name)", ({ key, flag, dialogId }) => {
+      it("Test A — input field ignores shortcut", () => {
+        render(
+          <div>
+            <ProjectsView />
+            <input data-testid="test-input" />
+          </div>
+        );
+
+        const input = screen.getByTestId("test-input");
+        let defaultPrevented = false;
+        act(() => {
+          defaultPrevented = !fireEvent.keyDown(input, {
+            key,
+            ctrlKey: true,
+          });
+        });
+
+        expect(defaultPrevented).toBe(false);
+        expect(flag()).toBe(false);
+        expect(screen.queryByTestId(dialogId)).toBeNull();
+      });
+
+      it("Test B — textarea ignores shortcut", () => {
+        render(
+          <div>
+            <ProjectsView />
+            <textarea data-testid="test-textarea" />
+          </div>
+        );
+
+        const textarea = screen.getByTestId("test-textarea");
+        let defaultPrevented = false;
+        act(() => {
+          defaultPrevented = !fireEvent.keyDown(textarea, {
+            key,
+            metaKey: true,
+          });
+        });
+
+        expect(defaultPrevented).toBe(false);
+        expect(flag()).toBe(false);
+        expect(screen.queryByTestId(dialogId)).toBeNull();
+      });
+
+      it("Test C — select element ignores shortcut", () => {
+        render(
+          <div>
+            <ProjectsView />
+            <select data-testid="test-select">
+              <option value="1">Option 1</option>
+            </select>
+          </div>
+        );
+
+        const select = screen.getByTestId("test-select");
+        let defaultPrevented = false;
+        act(() => {
+          defaultPrevented = !fireEvent.keyDown(select, {
+            key,
+            ctrlKey: true,
+          });
+        });
+
+        expect(defaultPrevented).toBe(false);
+        expect(flag()).toBe(false);
+        expect(screen.queryByTestId(dialogId)).toBeNull();
+      });
+
+      it("Test D — contenteditable element ignores shortcut", () => {
+        render(
+          <div>
+            <ProjectsView />
+            <div data-testid="test-contenteditable" contentEditable="true" suppressContentEditableWarning />
+          </div>
+        );
+
+        const editable = screen.getByTestId("test-contenteditable");
+        let defaultPrevented = false;
+        act(() => {
+          defaultPrevented = !fireEvent.keyDown(editable, {
+            key,
+            metaKey: true,
+          });
+        });
+
+        expect(defaultPrevented).toBe(false);
+        expect(flag()).toBe(false);
+        expect(screen.queryByTestId(dialogId)).toBeNull();
+      });
+
+      it("Test E — nested element inside contenteditable container ignores shortcut", () => {
+        render(
+          <div>
+            <ProjectsView />
+            <div contentEditable="true" suppressContentEditableWarning>
+              <p>
+                <span data-testid="nested-editable-span">Editing inside</span>
+              </p>
+            </div>
+          </div>
+        );
+
+        const nestedSpan = screen.getByTestId("nested-editable-span");
+        let defaultPrevented = false;
+        act(() => {
+          defaultPrevented = !fireEvent.keyDown(nestedSpan, {
+            key,
+            ctrlKey: true,
+          });
+        });
+
+        expect(defaultPrevented).toBe(false);
+        expect(flag()).toBe(false);
+        expect(screen.queryByTestId(dialogId)).toBeNull();
+      });
+
+      it("Test F — non-editable dashboard element still activates shortcut", () => {
+        render(
+          <div>
+            <ProjectsView />
+            <div data-testid="normal-div">Normal Dashboard Element</div>
+          </div>
+        );
+
+        const normalDiv = screen.getByTestId("normal-div");
+        let defaultPrevented = false;
+        act(() => {
+          defaultPrevented = !fireEvent.keyDown(normalDiv, {
+            key,
+            ctrlKey: true,
+          });
+        });
+
+        expect(defaultPrevented).toBe(true);
+        expect(flag()).toBe(true);
+        expect(screen.getByTestId(dialogId)).toBeDefined();
+      });
+    });
+  });
 });
