@@ -63,21 +63,25 @@ export const FileExplorer = ({
   return (
     <div className="h-full bg-sidebar">
       <ScrollArea>
-        <div
-          role="button"
-          onClick={() => setIsOpen((value) => !value)}
-          className="group/project cursor-pointer w-full text-left flex items-center gap-0.5 h-5.5 bg-accent font-bold"
-        >
-          <ChevronRightIcon
-            className={cn(
-              "size-4 shrink-0 text-muted-foreground",
-              isOpen && "rotate-90"
-            )}
-          />
-          <p className="text-xs uppercase line-clamp-1">
-            {project?.name ?? "Loading..."}
-          </p>
-          <div className="opacity-0 group-hover/project:opacity-100 transition-none duration-0 flex items-center gap-0.5 ml-auto">
+        <div className="group/project flex items-center h-5.5 bg-accent font-bold">
+          <button
+            type="button"
+            onClick={() => setIsOpen((value) => !value)}
+            aria-expanded={isOpen}
+            aria-label={project?.name ? `${project.name} explorer` : "Project explorer"}
+            className="flex-1 min-w-0 text-left flex items-center gap-0.5 h-full cursor-pointer bg-transparent border-0 p-0 text-inherit font-inherit outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+          >
+            <ChevronRightIcon
+              className={cn(
+                "size-4 shrink-0 text-muted-foreground",
+                isOpen && "rotate-90"
+              )}
+            />
+            <p className="text-xs uppercase line-clamp-1">
+              {project?.name ?? "Loading..."}
+            </p>
+          </button>
+          <div className="opacity-0 group-hover/project:opacity-100 focus-within:opacity-100 transition-none duration-0 flex items-center gap-0.5 ml-auto shrink-0 pr-1">
             <Button
               onClick={(e) => {
                 e.stopPropagation();
