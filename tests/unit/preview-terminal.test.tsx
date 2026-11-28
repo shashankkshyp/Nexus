@@ -62,6 +62,7 @@ vi.mock("@/features/preview/components/preview-settings-popover", () => ({
 
 // Mock useWebContainer
 let mockRestart = vi.fn();
+let mockResync = vi.fn();
 const mockSendTerminalInput = vi.fn();
 const mockResizeTerminal = vi.fn();
 const mockInterruptForegroundProcess = vi.fn();
@@ -69,6 +70,9 @@ let mockTerminalOutput = "";
 let mockStatus = "ready";
 let mockPreviewUrl: string | null = "http://localhost:3000";
 let mockError: string | null = null;
+let mockIsSyncing = false;
+let mockSyncError: string | null = null;
+let mockIsStale = false;
 
 vi.mock("@/features/preview/hooks/use-webcontainer", () => ({
   useWebContainer: () => ({
@@ -76,6 +80,10 @@ vi.mock("@/features/preview/hooks/use-webcontainer", () => ({
     previewUrl: mockPreviewUrl,
     error: mockError,
     restart: mockRestart,
+    resync: mockResync,
+    isSyncing: mockIsSyncing,
+    syncError: mockSyncError,
+    isStale: mockIsStale,
     terminalOutput: mockTerminalOutput,
     sendTerminalInput: mockSendTerminalInput,
     resizeTerminal: mockResizeTerminal,
