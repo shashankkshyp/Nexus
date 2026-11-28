@@ -903,3 +903,134 @@ describe("File explorer keyboard activation and rename behavior (Issue #107)", (
     expect(onRename).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("FileExplorer header keyboard accessibility (Issue #116)", () => {
+  const projectId = "proj_123" as Id<"projects">;
+  const mockFileItem: Doc<"files"> = {
+    _id: "file_root" as Id<"files">,
+    _creationTime: 1000,
+    projectId,
+    name: "main.ts",
+    type: "file",
+    content: "console.log('hi');",
+    updatedAt: 1000,
+  };
+
+  beforeEach(() => {
+    mockFolderContentsHandler = ({ enabled }) => {
+      if (enabled === false) return undefined;
+      return [mockFileItem];
+    };
+  });
+
+  it("Test A — Accessible header: exposed as button, has accessible name, and is keyboard focusable", () => {
+    render(<FileExplorer projectId={projectId} />);
+
+    const headerButton = screen.getByRole("button", { name: /Nexus App explorer/i });
+    expect(headerButton).toBeDefined();
+    expect(headerButton.tagName.toLowerCase()).toBe("button");
+    expect(headerButton.getAttribute("type")).toBe("button");
+    expect(headerButton.getAttribute("aria-label")).toBe("Nexus App explorer");
+
+    headerButton.focus();
+    expect(document.activeElement).toBe(headerButton);
+  });
+
+  it("Test B — Initial expanded state exposes aria-expanded='true'", () => {
+    render(<FileExplorer projectId={projectId} />);
+
+    const headerButton = screen.getByRole("button", { name: /Nexus App explorer/i });
+    expect(headerButton.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("main.ts")).toBeDefined();
+  });
+
+  it("Test C & D — Enter interaction toggles between expanded and collapsed with accurate aria-expanded", () => {
+    render(<FileExplorer projectId={projectId} />);
+
+    const headerButton = screen.getByRole("button", { name: /Nexus App explorer/i });
+    expect(headerButton.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("main.ts")).toBeDefined();
+
+    // Toggle closed with Enter
+    headerButton.focus();
+    fireEvent.click(headerButton); // native button click triggered by Enter
+    expect(headerButton.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("main.ts")).toBeNull();
+
+    // Toggle open with Enter
+    fireEvent.click(headerButton);
+    expect(headerButton.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("main.ts")).toBeDefined();
+  });
+
+  it("Test E — Space interaction toggles explorer exactly once without duplicate toggles", () => {
+    render(<FileExplorer projectId={projectId} />);
+
+    const headerButton = screen.getByRole("button", { name: /Nexus App explorer/i });
+    expect(headerButton.getAttribute("aria-expanded")).toBe("true");
+
+    headerButton.focus();
+    fireEvent.click(headerButton); // native button activation from space
+
+    expect(headerButton.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("main.ts")).toBeNull();
+  });
+
+  it("Test F & G — Action buttons (New file, New folder) do not toggle the explorer header", () => {
+    const { container } = render(<FileExplorer projectId={projectId} />);
+
+    const headerButton = screen.getByRole("button", { name: /Nexus App explorer/i });
+    expect(headerButton.getAttribute("aria-expanded")).toBe("true");
+
+    // Click New File button
+    const newFileButton = screen.getByRole("button", { name: "New file" });
+    fireEvent.click(newFileButton);
+
+    // Explorer should still be expanded and create input rendered
+    expect(headerButton.getAttribute("aria-expanded")).toBe("true");
+    const input = container.querySelector("input[type='text']") as HTMLInputElement;
+    expect(input).toBeDefined();
+    expect(input).not.toBeNull();
+
+    // Cancel create
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    // Click New Folder button
+    const newFolderButton = screen.getByRole("button", { name: "New folder" });
+    fireEvent.click(newFolderButton);
+
+    expect(headerButton.getAttribute("aria-expanded")).toBe("true");
+    const folderInput = container.querySelector("input[type='text']") as HTMLInputElement;
+    expect(folderInput).toBeDefined();
+    expect(folderInput).not.toBeNull();
+  });
+
+  it("Test H — Expand-all and collapse-all controls retain functionality without disrupting header aria-expanded", () => {
+    render(<FileExplorer projectId={projectId} />);
+
+    const headerButton = screen.getByRole("button", { name: /Nexus App explorer/i });
+    const expandAllButton = screen.getByRole("button", { name: "Expand all folders" });
+    const collapseAllButton = screen.getByRole("button", { name: "Collapse all folders" });
+
+    fireEvent.click(collapseAllButton);
+    expect(headerButton.getAttribute("aria-expanded")).toBe("true");
+
+    fireEvent.click(expandAllButton);
+    expect(headerButton.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("Test I — Accessibility regression: header does not produce nested interactive button controls", () => {
+    render(<FileExplorer projectId={projectId} />);
+
+    const headerButton = screen.getByRole("button", { name: /Nexus App explorer/i });
+    // Verify no button or interactive role is nested inside headerButton
+    expect(headerButton.querySelector("button")).toBeNull();
+    expect(headerButton.querySelector("[role='button']")).toBeNull();
+
+    // Verify all 4 action buttons exist
+    expect(screen.getByRole("button", { name: "New file" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "New folder" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Expand all folders" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Collapse all folders" })).toBeDefined();
+  });
+});
