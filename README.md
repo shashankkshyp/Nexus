@@ -95,6 +95,8 @@ Copy-Item .env.example .env.local
 
 Open `.env.local` in your editor. Refer to [.env.example](.env.example) for detailed variable comments.
 
+For the complete environment-variable reference, including public/server scope, required versus optional settings, and local versus production configuration, see the [Environment Variables and Deployment Configuration Guide](docs/architecture.md#environment-variables-and-deployment-configuration).
+
 ---
 
 ## 🛠️ Step-by-Step Service Setup
