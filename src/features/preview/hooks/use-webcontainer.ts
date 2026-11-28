@@ -59,6 +59,9 @@ export const useWebContainer = ({
   const [error, setError] = useState<string | null>(null);
   const [restartKey, setRestartKey] = useState(0);
   const [terminalOutput, setTerminalOutput] = useState("");
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [resyncTrigger, setResyncTrigger] = useState(0);
 
   const containerRef = useRef<WebContainer | null>(null);
   const hasStartedRef = useRef(false);
@@ -68,6 +71,8 @@ export const useWebContainer = ({
   });
   const syncQueueRef = useRef<Promise<void>>(Promise.resolve());
   const currentProjectIdRef = useRef<Id<"projects">>(projectId);
+  const syncSequenceRef = useRef(0);
+  const activeSyncCountRef = useRef(0);
 
   // References to active processes and streams
   const shellProcessRef = useRef<WebContainerProcess | null>(null);
@@ -102,10 +107,14 @@ export const useWebContainer = ({
       hasStartedRef.current = false;
       previousSnapshotRef.current = { files: new Map(), directories: new Set() };
       syncQueueRef.current = Promise.resolve();
+      syncSequenceRef.current += 1;
+      activeSyncCountRef.current = 0;
       setStatus("idle");
       setPreviewUrl(null);
       setError(null);
       setTerminalOutput("");
+      setIsSyncing(false);
+      setSyncError(null);
     }
   }, [projectId]);
 
@@ -342,6 +351,9 @@ export const useWebContainer = ({
     if (!container || !files || status !== "running") return;
 
     let isEffectActive = true;
+    const currentSyncSeq = ++syncSequenceRef.current;
+    activeSyncCountRef.current += 1;
+    setIsSyncing(true);
 
     // Chain sync task onto sequential promise queue to guard against concurrent interleaving
     syncQueueRef.current = syncQueueRef.current
@@ -357,6 +369,9 @@ export const useWebContainer = ({
           prevSnapshot.directories.size === 0
         ) {
           previousSnapshotRef.current = currentSnapshot;
+          if (currentSyncSeq >= syncSequenceRef.current) {
+            setSyncError(null);
+          }
           return;
         }
 
@@ -390,6 +405,8 @@ export const useWebContainer = ({
         }
 
         // 4. Write new or modified files (ensuring directories exist)
+        let writeFailed = false;
+        let lastWriteError: unknown = null;
         for (const { path: filePath, content } of diff.filesToWrite) {
           const dir = filePath.includes("/")
             ? filePath.substring(0, filePath.lastIndexOf("/"))
@@ -407,21 +424,43 @@ export const useWebContainer = ({
             await container.fs.writeFile(filePath, content);
           } catch (writeErr) {
             console.error(`[WebContainer] Failed to sync ${filePath}:`, writeErr);
+            writeFailed = true;
+            lastWriteError = writeErr;
           }
+        }
+
+        if (writeFailed) {
+          throw lastWriteError || new Error("Failed to write updated files to container");
         }
 
         if (isEffectActive) {
           previousSnapshotRef.current = currentSnapshot;
+          if (currentSyncSeq >= syncSequenceRef.current) {
+            setSyncError(null);
+          }
         }
       })
       .catch((err) => {
         console.error("[WebContainer] File synchronization error:", err);
+        if (isEffectActive && currentSyncSeq >= syncSequenceRef.current) {
+          setSyncError(
+            err instanceof Error && err.message
+              ? err.message
+              : "Failed to synchronize files with preview",
+          );
+        }
+      })
+      .finally(() => {
+        activeSyncCountRef.current = Math.max(0, activeSyncCountRef.current - 1);
+        if (isEffectActive && activeSyncCountRef.current === 0) {
+          setIsSyncing(false);
+        }
       });
 
     return () => {
       isEffectActive = false;
     };
-  }, [files, status]);
+  }, [files, status, resyncTrigger]);
 
   // Reset when disabled
   useEffect(() => {
@@ -445,6 +484,10 @@ export const useWebContainer = ({
       hasStartedRef.current = false;
       previousSnapshotRef.current = { files: new Map(), directories: new Set() };
       syncQueueRef.current = Promise.resolve();
+      syncSequenceRef.current += 1;
+      activeSyncCountRef.current = 0;
+      setIsSyncing(false);
+      setSyncError(null);
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setStatus("idle");
       setPreviewUrl(null);
@@ -476,17 +519,31 @@ export const useWebContainer = ({
     hasStartedRef.current = false;
     previousSnapshotRef.current = { files: new Map(), directories: new Set() };
     syncQueueRef.current = Promise.resolve();
+    syncSequenceRef.current += 1;
+    activeSyncCountRef.current = 0;
     setStatus("idle");
     setPreviewUrl(null);
     setError(null);
+    setIsSyncing(false);
+    setSyncError(null);
     setRestartKey((k) => k + 1);
   }, []);
+
+  const resync = useCallback(() => {
+    setResyncTrigger((prev) => prev + 1);
+  }, []);
+
+  const isStale = Boolean(syncError || (isSyncing && status === "running"));
 
   return {
     status,
     previewUrl,
     error,
     restart,
+    isSyncing,
+    syncError,
+    isStale,
+    resync,
     terminalOutput,
     sendTerminalInput,
     resizeTerminal,
