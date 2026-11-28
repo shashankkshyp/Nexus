@@ -1428,3 +1428,331 @@ When introducing a new agent tool to Nexus, follow this checklist:
 - **Message API Routes:**
   - [`src/app/api/messages/route.ts`](../src/app/api/messages/route.ts)
   - [`src/app/api/messages/cancel/route.ts`](../src/app/api/messages/cancel/route.ts)
+
+---
+
+## 11. Environment Variables and Deployment Configuration
+
+This section provides a complete, authoritative configuration reference for all environment variables defined in [`.env.example`](../.env.example). It details runtime scope (client-visible vs. server-only secret), requirement level, target configuration location, and local versus production behavior.
+
+### A. Environment Configuration Matrix
+
+| Variable | Purpose | Scope | Requirement | Configuration Location | Notes |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `NEXT_PUBLIC_APP_URL` | Application base URL used for metadata and canonical redirection. | Public (Client & Server) | Optional | `.env.local` / Hosting Environment | Defaults to `http://localhost:3000` locally. Set to production URL (e.g. `https://nexus.example.com`) in hosted deployment. Embedded into client bundles at build time. |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk frontend API publishable key identifying the Clerk application instance. | Public (Client & Server) | Required | `.env.local` / Hosting Environment | Obtained from Clerk Dashboard > API Keys (`pk_test_...` or `pk_live_...`). Embedded into client bundles at build time. Server restart or rebuild required when updated. |
+| `CLERK_SECRET_KEY` | Clerk backend secret key used for server-side API requests and token verification. | Server-only | Required | `.env.local` / Hosting Environment | Obtained from Clerk Dashboard > API Keys (`sk_test_...` or `sk_live_...`). Strictly server-side; never exposed to browser bundles. Runtime-evaluated on server routes. |
+| `NEXT_PUBLIC_CLERK_SIGN_IN_URL` | Path for custom Clerk sign-in routing. | Public (Client & Server) | Optional | `.env.local` / Hosting Environment | Typically `/sign-in`. If unset, Clerk defaults to modal/component flows. Embedded at build time. |
+| `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | Path for custom Clerk sign-up routing. | Public (Client & Server) | Optional | `.env.local` / Hosting Environment | Typically `/sign-up`. If unset, Clerk defaults to modal/component flows. Embedded at build time. |
+| `NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL` | Default redirect target route after successful user sign-in. | Public (Client & Server) | Optional | `.env.local` / Hosting Environment | Typically `/`. Embedded into client bundles at build time. |
+| `NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL` | Default redirect target route after successful user sign-up. | Public (Client & Server) | Optional | `.env.local` / Hosting Environment | Typically `/`. Embedded into client bundles at build time. |
+| `NEXT_PUBLIC_CONVEX_URL` | Public HTTP and WebSocket endpoint for the Convex deployment. | Public (Client & Server) | Required | `.env.local` / Hosting Environment | Generated automatically by `npx convex dev` or found in Convex Dashboard > Project Settings. Embedded into client bundles for `ConvexReactClient`. |
+| `CONVEX_DEPLOYMENT` | Deployment identifier target used by Convex CLI for syncing functions and schema. | Server / CLI tooling | Required (Local & CI/CD deployment) | `.env.local` / Hosting Environment | Format: `dev:deployment-name` (local dev) or `prod:deployment-name` (production). Used by `npx convex dev` and deployment commands. |
+| `NEXUS_CONVEX_INTERNAL_KEY` | 32-byte hex shared secret securing internal server-to-server operations between Next.js APIs, Inngest background workers, and Convex system endpoints. | Server-only | Required | `.env.local` **AND** Convex deployment environment (`npx convex env set`) | **Must match exactly** across `.env.local` and Convex. Generated via `openssl rand -hex 32`. Validated in `convex/system.ts`. Never prefix with `NEXT_PUBLIC_`. |
+| `CLERK_JWT_ISSUER_DOMAIN` | Clerk JWT Issuer URL configured in Convex auth template to verify Clerk session tokens. | Server-only (Convex deployment) | Required in Convex deployment | Convex deployment environment (`npx convex env set CLERK_JWT_ISSUER_DOMAIN <url>`) | Optional in `.env.local`, but **required in Convex**. Configured via `convex/auth.config.ts`. Sourced from Clerk Dashboard > JWT Templates > Convex Issuer URL (`https://<id>.clerk.accounts.dev`). |
+| `INNGEST_SIGNING_KEY` | HMAC signing key used to cryptographically verify incoming Inngest execution webhooks. | Server-only | Optional for local dev; Required in production | Hosting Environment (e.g. Vercel) / `.env.local` (if connecting to Inngest Cloud) | Local dev server (`npx inngest-cli dev`) handles execution over local HTTP without a signing key. Required in production to secure `/api/inngest`. |
+| `INNGEST_EVENT_KEY` | Event ingestion key used to publish durable background events to Inngest Cloud. | Server-only | Optional for local dev; Required in production | Hosting Environment (e.g. Vercel) / `.env.local` (if dispatching to Inngest Cloud) | Local Inngest dev server accepts events without an event key. Required in hosted production environments. |
+| `OPENAI_API_KEY` | OpenAI secret API key used for ghost-text suggestions, Cmd+K quick edits, and conversational AI agent steps. | Server-only | Required | `.env.local` / Hosting Environment | Sourced from OpenAI Platform (`sk-proj-...`). Consumed by Vercel AI SDK and Inngest agent workflows on the server. Never expose to client bundles. |
+| `FIRECRAWL_API_KEY` | Firecrawl API key used for web scraping and documentation retrieval during Cmd+K quick edits. | Server-only | Optional | `.env.local` / Hosting Environment | Sourced from Firecrawl Dashboard (`fc-...`). If unset or empty, URL documentation scraping in quick edit gracefully falls back without crashing. |
+| `NEXT_PUBLIC_SENTRY_DSN` | Sentry Data Source Name for client-side browser runtime error capturing. | Public (Client bundle) | Optional | `.env.local` / Hosting Environment | If unset or empty, client-side Sentry initialization is disabled. Embedded into browser JavaScript at build time. Must never contain server secrets. |
+| `SENTRY_DSN` | Sentry Data Source Name for Node.js server and edge runtime error capturing. | Server-only | Optional | `.env.local` / Hosting Environment | If unset or empty, server and edge Sentry reporting is disabled. Consumed in `sentry.server.config.ts` and `sentry.edge.config.ts`. Strictly server-side. |
+
+---
+
+### B. Local Development Setup
+
+1. **Create Local Environment File:**
+   Copy [`.env.example`](../.env.example) to `.env.local`:
+   ```bash
+   cp .env.example .env.local
+   ```
+2. **Populate Core Credentials:**
+   - Supply valid development keys for Clerk (`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`).
+   - Supply an OpenAI key (`OPENAI_API_KEY`).
+   - Generate a 32-byte hex key for `NEXUS_CONVEX_INTERNAL_KEY` (`openssl rand -hex 32`).
+3. **Optional Feature Integrations:**
+   - Leave `FIRECRAWL_API_KEY` blank if URL documentation scraping is not needed locally.
+   - Leave `NEXT_PUBLIC_SENTRY_DSN` and `SENTRY_DSN` blank to disable error telemetry in development.
+   - Omit `INNGEST_SIGNING_KEY` and `INNGEST_EVENT_KEY` when running the local Inngest dev server (`npx inngest-cli dev`).
+4. **Development Server Restarts:**
+   - Next.js loads `.env.local` on startup. Modifying any variable in `.env.local` requires restarting `npm run dev`.
+   - Client components consume `NEXT_PUBLIC_*` values injected at bundle time; server components and route handlers read non-prefixed variables at runtime.
+
+---
+
+### C. Convex Deployment Configuration
+
+Convex functions execute in an isolated cloud environment independent of Next.js. Consequently, environment variables needed by Convex mutations, queries, or auth configurations must be set inside Convex:
+
+1. **Automatic CLI Variables:**
+   Running `npx convex dev` initializes the project and automatically writes `NEXT_PUBLIC_CONVEX_URL` and `CONVEX_DEPLOYMENT` to your local `.env.local`.
+2. **Manual Convex Environment Variables:**
+   The following variables must be configured in Convex via the CLI or Convex Dashboard:
+   - **Internal Service Key:**
+     ```bash
+     npx convex env set NEXUS_CONVEX_INTERNAL_KEY <same-32-byte-hex-key-as-in-env-local>
+     ```
+   - **Clerk JWT Issuer Domain:**
+     ```bash
+     npx convex env set CLERK_JWT_ISSUER_DOMAIN https://<your-clerk-subdomain>.clerk.accounts.dev
+     ```
+3. **Production Convex Deployments:**
+   When promoting to production (`npx convex deploy`), repeat the `npx convex env set` commands targeting the production deployment or set them via the Convex Dashboard under **Project Settings > Environment Variables**.
+
+---
+
+### D. Inngest Background Engine Configuration
+
+Nexus relies on Inngest to orchestrate background AI agent workflows, repository imports, and export jobs:
+
+1. **Local Development:**
+   - Start the local dev server using `npx inngest-cli@latest dev`.
+   - The CLI connects locally to `http://localhost:3000/api/inngest` and processes jobs without requiring `INNGEST_SIGNING_KEY` or `INNGEST_EVENT_KEY`.
+2. **Production / Hosted Deployment:**
+   - Set `INNGEST_SIGNING_KEY` in the hosting environment (e.g. Vercel) so that incoming HTTP webhook invocations to `/api/inngest` are verified against tampering.
+   - Set `INNGEST_EVENT_KEY` in the hosting environment to authorize event dispatching (`inngest.send(...)`) to Inngest Cloud.
+
+---
+
+### E. Production Deployment & Build Environments
+
+When deploying Nexus to hosting platforms (e.g., Vercel, AWS Amplify, Docker):
+
+1. **Variable Configuration:**
+   Configure all required variables in the hosting provider's dashboard under Project Settings > Environment Variables.
+2. **Build-Time vs. Runtime Evaluation:**
+   - **Public Variables (`NEXT_PUBLIC_*`):** Evaluated and inlined during `next build`. If a `NEXT_PUBLIC_*` variable is added or changed, a complete redeployment and rebuild is required for changes to take effect in the browser.
+   - **Server-Only Variables:** Evaluated at request runtime by Node.js or Edge runtimes. Updates take effect on subsequent function invocations without requiring client bundle recompilation.
+3. **Sentry Error Telemetry:**
+   Nexus strictly decouples client and server Sentry keys. Use `NEXT_PUBLIC_SENTRY_DSN` for browser tracking and `SENTRY_DSN` for server/edge tracking. Setting neither disables telemetry safely.
+
+---
+
+### F. Security and Credential Handling
+
+- **Browser Exposure:** Any variable prefixed with `NEXT_PUBLIC_` is included in client bundles and is publicly inspectable by any website visitor. **Never** prefix secrets, private keys, or internal shared tokens with `NEXT_PUBLIC_`.
+- **Git Hygiene:** Never commit `.env.local` or files containing unmasked secrets. `.env.local` is included in [`.gitignore`](../.gitignore).
+- **Secret Rotation:** When rotating `NEXUS_CONVEX_INTERNAL_KEY`, update both the hosting environment and Convex environment simultaneously to prevent authorization rejections on system endpoints.
+
+
+---
+
+## Environment Variables and Deployment Configuration
+
+Nexus requires environment variables across multiple execution contexts: the client browser bundle, Next.js server runtime, Convex database environment, and Inngest background job orchestrator.
+
+### Configuration Matrix
+
+| Variable | Purpose | Scope | Requirement | Configuration Location | Notes |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `NEXT_PUBLIC_APP_URL` | Base application URL used for client/server redirection, absolute URLs, and metadata generation. | Public (Client & Server) | Optional | `.env.local` / Hosting provider | Defaults to `http://localhost:3000` in local development if omitted. In production, configure to your canonical production URL. Embedded into client bundles during build. |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk publishable API key used to initialize the Clerk client-side SDK and authentication components in the browser. | Public (Client & Server) | Required | `.env.local` / Hosting provider | Obtained from Clerk Dashboard > API Keys (starts with `pk_test_` or `pk_live_`). Embedded into client bundles at build time; changing requires app rebuild/restart. |
+| `CLERK_SECRET_KEY` | Clerk secret key used for server-side user verification (`auth()`) and Clerk Backend API calls. | Server-only | Required | `.env.local` / Hosting provider | Obtained from Clerk Dashboard > API Keys (starts with `sk_test_` or `sk_live_`). Must never be exposed to the browser or prefixed with `NEXT_PUBLIC_`. |
+| `NEXT_PUBLIC_CLERK_SIGN_IN_URL` | Frontend route for the Clerk user sign-in page. | Public (Client & Server) | Optional | `.env.local` / Hosting provider | Defaults to `/sign-in`. Used by Clerk middleware and navigation components to route unauthenticated users. |
+| `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | Frontend route for the Clerk user sign-up page. | Public (Client & Server) | Optional | `.env.local` / Hosting provider | Defaults to `/sign-up`. Used by Clerk components for account registration navigation. |
+| `NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL` | Redirect target route after a user successfully completes sign-in. | Public (Client & Server) | Optional | `.env.local` / Hosting provider | Defaults to `/`. Directs users to the primary IDE workspace upon authenticating. |
+| `NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL` | Redirect target route after a user successfully registers a new account. | Public (Client & Server) | Optional | `.env.local` / Hosting provider | Defaults to `/`. Directs new users to the root workspace route upon completing registration. |
+| `NEXT_PUBLIC_CONVEX_URL` | Public HTTP and WebSocket endpoint for the Convex deployment, used by `ConvexReactClient` and server clients. | Public (Client & Server) | Required | `.env.local` / Hosting provider | Automatically generated and populated by `npx convex dev`. Must point to the production Convex deployment URL in production hosting environments. |
+| `CONVEX_DEPLOYMENT` | Deployment identifier target used by the Convex CLI to bind local development or CI build operations to a specific Convex project. | Deployment-only / CLI | Required (Convex CLI / Cloud) | `.env.local` / CI/CD environment | Formatted as `dev:<deployment-name>` or `prod:<deployment-name>`. Consumed exclusively by `npx convex dev` and deployment CLI commands, not by Next.js application runtime code. |
+| `NEXUS_CONVEX_INTERNAL_KEY` | Cryptographic 32-byte hex shared secret authorizing internal server-to-server operations between Next.js API routes, Inngest workers, and `convex/system.ts` mutations. | Server-only | Required | `.env.local` AND Convex Environment | **Shared Secret Matching:** Must be identical in both `.env.local` and Convex (`npx convex env set NEXUS_CONVEX_INTERNAL_KEY <secret>`). Never expose to browser. Server restart required after modification. |
+| `CLERK_JWT_ISSUER_DOMAIN` | Issuer domain from the Clerk JWT Convex template (e.g. `https://<id>.clerk.accounts.dev`), authorizing Convex to validate Clerk user JWTs via `convex/auth.config.ts`. | Server-only (Convex) | Required in Convex deployment | Convex Environment (`npx convex env set`) / Optional in `.env.local` | Configured in Convex via `npx convex env set CLERK_JWT_ISSUER_DOMAIN <url>`. Allows Convex to verify user identity for client-initiated queries and mutations. |
+| `INNGEST_SIGNING_KEY` | Cryptographic key used by Inngest SDK to verify digital signatures on incoming webhook deliveries to `/api/inngest`. | Server-only | Deployment-only (Required in Production) | Hosting provider / Optional in `.env.local` | Not needed during local development when running `npx inngest-cli dev` (runs in unauthenticated dev mode). Required in staging and production to prevent spoofed webhook dispatches. |
+| `INNGEST_EVENT_KEY` | Event publishing key allowing server API routes to dispatch events to the Inngest Cloud event bus. | Server-only | Deployment-only (Required in Production) | Hosting provider / Optional in `.env.local` | Not needed during local development when using `npx inngest-cli dev` on `localhost:8288`. Required in production when communicating with Inngest Cloud. |
+| `OPENAI_API_KEY` | OpenAI secret API key used for `gpt-4.1-mini` completions in ghost text suggestions, Cmd+K quick edits, and AI assistant background agents. | Server-only | Required | `.env.local` / Hosting provider | Obtained from OpenAI Platform > API Keys (starts with `sk-proj-`). Never expose to the browser. Required for all AI assistant, suggestion, and quick-edit functionality. |
+| `FIRECRAWL_API_KEY` | Secret API key for Firecrawl web scraper service, used to scrape and extract live documentation when URLs are included in Cmd+K quick-edit prompts. | Server-only | Optional | `.env.local` / Hosting provider | Obtained from Firecrawl Dashboard (starts with `fc-`). If unset, quick-edit URL scraping is gracefully skipped without breaking code edits. |
+| `NEXT_PUBLIC_SENTRY_DSN` | Public Data Source Name (DSN) for client-side browser error reporting in Sentry (`src/instrumentation-client.ts`). | Public (Client) | Optional | `.env.local` / Hosting provider | If empty or unset, client-side Sentry initialization is disabled. Included in client bundle at build time; requires rebuilding application when changed. |
+| `SENTRY_DSN` | Secret Data Source Name (DSN) for Node.js server runtime and Edge runtime error reporting in Sentry (`sentry.server.config.ts`, `sentry.edge.config.ts`). | Server-only | Optional | `.env.local` / Hosting provider | If empty or unset, server-side and edge Sentry initialization is disabled. Strictly server-only; must not be exposed to the client bundle. |
+
+---
+
+### Additional Configuration Notes
+
+#### A. Local Setup Workflow
+1. Copy `.env.example` to `.env.local`:
+   ```bash
+   cp .env.example .env.local
+   ```
+2. Run `npx convex dev` to initialize your Convex dev project. The CLI automatically updates `NEXT_PUBLIC_CONVEX_URL` and `CONVEX_DEPLOYMENT` in `.env.local`.
+3. Add your Clerk API keys (`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY`) and OpenAI API key (`OPENAI_API_KEY`) to `.env.local`.
+4. Generate a 32-byte hex shared secret (`openssl rand -hex 32`) and set it as `NEXUS_CONVEX_INTERNAL_KEY` in `.env.local`.
+5. Optional integrations (Firecrawl, Sentry, and custom Clerk URLs) can be left blank or omitted if those services are not actively needed during development.
+6. **Server Restart:** Any addition or modification to variables in `.env.local` requires stopping and restarting the Next.js development server (`npm run dev`) for changes to take effect.
+
+#### B. Convex Environment Configuration
+1. Convex functions execute in an isolated cloud sandbox and **do not** read `.env.local`.
+2. Variables required by Convex must be set in the Convex deployment environment using the Convex CLI or dashboard:
+   - **Internal Service Key:**
+     ```bash
+     npx convex env set NEXUS_CONVEX_INTERNAL_KEY <your-32-byte-hex-secret>
+     ```
+     This secret must match the value configured in `.env.local` exactly.
+   - **Clerk JWT Issuer Domain:**
+     ```bash
+     npx convex env set CLERK_JWT_ISSUER_DOMAIN https://<your-clerk-subdomain>.clerk.accounts.dev
+     ```
+     Required for Convex to authenticate Clerk session tokens via `convex/auth.config.ts`.
+3. Verify Convex deployment variables at any time using `npx convex env list` or `npx convex env get <VARIABLE_NAME>`.
+
+#### C. Inngest Configuration
+1. **Local Development:** When running `npx inngest-cli@latest dev`, the local Inngest development server acts as the event bus without authentication. `INNGEST_SIGNING_KEY` and `INNGEST_EVENT_KEY` are optional and can remain commented out in `.env.local`.
+2. **Production / Cloud:** In deployed environments connected to Inngest Cloud, configure `INNGEST_SIGNING_KEY` (to cryptographically verify requests hitting `/api/inngest`) and `INNGEST_EVENT_KEY` (to dispatch background events to the Inngest Cloud pipeline) in your hosting provider's environment settings.
+
+#### D. Production Deployment
+1. When deploying to hosting platforms (e.g. Vercel, AWS, or container platforms), configure all required production variables in the hosting provider's dashboard settings.
+2. **Build-Time vs. Runtime:**
+   - Variables prefixed with `NEXT_PUBLIC_` (such as `NEXT_PUBLIC_CONVEX_URL`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, and `NEXT_PUBLIC_SENTRY_DSN`) are evaluated and inlined into the client JavaScript bundle at **build time**. If any of these values change, a full rebuild and redeployment is mandatory.
+   - Server-only variables (`CLERK_SECRET_KEY`, `NEXUS_CONVEX_INTERNAL_KEY`, `OPENAI_API_KEY`, `SENTRY_DSN`, etc.) are read at **runtime** by server components, Route Handlers, and middleware.
+
+#### E. Security Rules
+- **Public Bundle Exposure:** Every variable beginning with `NEXT_PUBLIC_` is public and accessible to anyone inspecting browser network traffic or JavaScript bundles. **Never** prefix secrets, tokens, or API private keys with `NEXT_PUBLIC_`.
+- **Version Control Protection:** Never commit `.env.local`, `.env.production`, or real API credentials to Git. `.gitignore` is configured to prevent `.env*.local` files from being tracked.
+- **Example Placeholders:** Values documented in `.env.example` are illustrative templates and must not be used as operational credentials.
+
+---
+
+## 11. Environment Variables and Deployment Configuration
+
+This section provides a complete, source-verified configuration matrix for every environment variable declared in [`.env.example`](../.env.example). It details runtime scope, requirement status, configuration locations, and operational behavior across local development and production environments.
+
+### Environment Variable Matrix
+
+| Variable | Purpose | Scope | Requirement | Configuration Location | Notes |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `NEXT_PUBLIC_APP_URL` | Base public canonical URL of the application. Used for absolute redirects, metadata, and OAuth callback origins. | Public (Client & Server) | Optional (Defaults to `http://localhost:3000` locally) | `.env.local`, Hosting / Build Environment | In production, set to your canonical custom domain (e.g. `https://nexus.yourdomain.com`). Requires rebuild/redeploy to update client bundle references. |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Public API key used by the Clerk React SDK (`<ClerkProvider>`) in the browser to initialize client-side authentication and session management. | Public (Client & Server) | Required | `.env.local`, Hosting / Build Environment | Obtain from Clerk Dashboard > API Keys. Starts with `pk_test_` (development) or `pk_live_` (production). Embedded in the client JS bundle; requires a rebuild/redeploy when changed. |
+| `CLERK_SECRET_KEY` | Private API key used by the Clerk server SDK for server-side session token verification (`auth()`) and privileged backend user/OAuth token management. | Server-only | Required | `.env.local`, Hosting / Build Environment | Obtain from Clerk Dashboard > API Keys. Starts with `sk_test_` (development) or `sk_live_` (production). Must **never** be prefixed with `NEXT_PUBLIC_` or exposed to the browser. |
+| `NEXT_PUBLIC_CLERK_SIGN_IN_URL` | Path to the dedicated sign-in page (`/sign-in`). | Public (Client & Server) | Optional | `.env.local`, Hosting / Build Environment | If unset, Clerk defaults to modal or standard component flows. Pre-set to `/sign-in` in `.env.example`. |
+| `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | Path to the dedicated sign-up page (`/sign-up`). | Public (Client & Server) | Optional | `.env.local`, Hosting / Build Environment | If unset, Clerk defaults to modal or standard component flows. Pre-set to `/sign-up` in `.env.example`. |
+| `NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL` | Destination path redirect after successful sign-in (`/`). | Public (Client & Server) | Optional | `.env.local`, Hosting / Build Environment | Redirects to the root workspace page upon successful login. Pre-set to `/` in `.env.example`. |
+| `NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL` | Destination path redirect after successful sign-up (`/`). | Public (Client & Server) | Optional | `.env.local`, Hosting / Build Environment | Redirects to the root workspace page upon initial registration. Pre-set to `/` in `.env.example`. |
+| `NEXT_PUBLIC_CONVEX_URL` | Public HTTP and WebSocket endpoint for the Convex deployment. Consumed by `ConvexReactClient` and `@/lib/convex-client`. | Public (Client & Server) | Required | `.env.local`, Hosting / Build Environment | Generated automatically locally via `npx convex dev`. In production, configure with the production Convex deployment URL in your hosting provider settings. |
+| `CONVEX_DEPLOYMENT` | Deployment target identifier used by the Convex CLI (`npx convex dev`, `npx convex deploy`) to link the workspace to a specific Convex project deployment. | CLI / Build Tooling | Required (CLI & Deployments) | `.env.local`, CI / Hosting Build Environment | Format is `dev:<deployment-name>` (local dev) or `prod:<deployment-name>` (production). Populated automatically by `npx convex dev`. Not read directly by client runtime code. |
+| `NEXUS_CONVEX_INTERNAL_KEY` | Shared secret key for privileged internal server-to-server operations. Authenticates Next.js API routes, Inngest background workers, and internal Convex system mutations (`convex/system.ts`). | Server-only | Required | `.env.local` **AND** Convex Environment | **Must match exactly** in both `.env.local` and your Convex deployment environment (`npx convex env set NEXUS_CONVEX_INTERNAL_KEY <key>`). Must **never** be prefixed with `NEXT_PUBLIC_`. |
+| `CLERK_JWT_ISSUER_DOMAIN` | Issuer domain from the Clerk Convex JWT template (e.g. `https://<id>.clerk.accounts.dev`). Validates user JWTs in `convex/auth.config.ts`. | Server-only (Convex runtime) | Required in Convex deployment | Convex Environment (`npx convex env set CLERK_JWT_ISSUER_DOMAIN <url>`) | Configured in Convex environment, not required for Next.js server runtime (though present in `.env.example` as a setup template reference). |
+| `INNGEST_SIGNING_KEY` | Cryptographic key used by Inngest to verify webhook request signatures sent to `/api/inngest`. | Server-only | Optional for local dev; Required in production / cloud | `.env.local` (production/hosted), Hosting Environment | In local development, the Inngest Dev Server (`npx inngest-cli dev`) connects without signing keys. In production, obtain from Inngest Cloud Dashboard > Webhooks / Signing Keys. |
+| `INNGEST_EVENT_KEY` | API event key used by the Inngest SDK client to dispatch events to the Inngest event bus (`inngest.send()`). | Server-only | Optional for local dev; Required in production / cloud | `.env.local` (production/hosted), Hosting Environment | Automatically routed to local dev server when running `npx inngest-cli dev` without an event key. In production, obtain from Inngest Cloud Dashboard > Event Keys. |
+| `OPENAI_API_KEY` | Secret API key for OpenAI GPT models. Used by Vercel AI SDK for code suggestions (`/api/suggestion`), quick edits (`/api/quick-edit`), and assistant workflows (`processMessage`). | Server-only | Required | `.env.local`, Hosting Environment | Starts with `sk-proj-`. Must remain strictly server-side. Used in App Router API handlers and Inngest background execution functions. |
+| `FIRECRAWL_API_KEY` | API key for Firecrawl web scraping service (`@mendable/firecrawl-js`). Scrapes external documentation URLs provided in Cmd+K quick edit prompts. | Server-only | Optional | `.env.local`, Hosting Environment | If unset or invalid, URL documentation scraping is cleanly bypassed and quick-edit proceeds with code-only context. |
+| `NEXT_PUBLIC_SENTRY_DSN` | Public Data Source Name (DSN) for Sentry error tracking in browser client bundles (`src/instrumentation-client.ts`). | Public (Client-side) | Optional | `.env.local`, Hosting / Build Environment | If unset or empty, client-side Sentry initialization is disabled. Safe for client bundle exposure; do not put server-only DSN secrets here. |
+| `SENTRY_DSN` | Private DSN for Sentry error tracking in Node.js server and Edge runtimes (`sentry.server.config.ts`, `sentry.edge.config.ts`). | Server-only | Optional | `.env.local`, Hosting Environment | If unset or empty, server/edge Sentry initialization is disabled. Must remain strictly server-side. Verified by test suite to never be exposed in client bundles. |
+
+---
+
+### Configuration and Deployment Details
+
+#### A. Local Setup Workflow
+1. Copy the template to `.env.local`:
+   ```bash
+   cp .env.example .env.local
+   ```
+2. Run `npx convex dev` to initialize your Convex dev project. The CLI will automatically populate `NEXT_PUBLIC_CONVEX_URL` and `CONVEX_DEPLOYMENT` in your `.env.local`.
+3. Fill in required third-party service credentials:
+   - `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` from your Clerk dashboard.
+   - `OPENAI_API_KEY` from your OpenAI developer platform.
+   - Generate a 32-byte hex key for `NEXUS_CONVEX_INTERNAL_KEY` (`openssl rand -hex 32`) and set it in both `.env.local` and Convex.
+4. Optional variables (`FIRECRAWL_API_KEY`, `NEXT_PUBLIC_SENTRY_DSN`, `SENTRY_DSN`, `INNGEST_SIGNING_KEY`, `INNGEST_EVENT_KEY`) may be left blank or omitted if those integrations are not actively needed for your local task.
+5. **Server Restart Requirement:** Next.js reads `.env.local` on startup. If you change or add variables in `.env.local`, restart the Next.js development server (`npm run dev`) for the new values to take effect.
+
+#### B. Convex Environment Configuration
+Convex runs functions in an isolated cloud sandbox and cannot read your local `.env.local` file directly. You must configure environment variables for the Convex runtime using the Convex CLI or Convex Dashboard:
+- **`CLERK_JWT_ISSUER_DOMAIN`:** Required for Clerk JWT authentication validation.
+  ```bash
+  npx convex env set CLERK_JWT_ISSUER_DOMAIN https://your-clerk-issuer-domain.clerk.accounts.dev
+  ```
+- **`NEXUS_CONVEX_INTERNAL_KEY`:** Required for privileged system queries and mutations in `convex/system.ts`.
+  ```bash
+  npx convex env set NEXUS_CONVEX_INTERNAL_KEY your-generated-32-byte-hex-key
+  ```
+To verify configured Convex variables:
+```bash
+npx convex env list
+```
+
+#### C. Inngest Background Engine Configuration
+- **Local Development:** When running the local Inngest Dev Server (`npx inngest-cli dev`), `INNGEST_SIGNING_KEY` and `INNGEST_EVENT_KEY` are optional. The Inngest SDK automatically routes events to the local dev server at `http://localhost:8288` without cryptographic verification.
+- **Production / Cloud:** When deploying to production (e.g. Vercel), Inngest Cloud dispatches webhook requests to your public endpoint (`https://yourdomain.com/api/inngest`). You must configure:
+  - `INNGEST_SIGNING_KEY`: Used by the Inngest handler to cryptographically verify incoming webhook signatures.
+  - `INNGEST_EVENT_KEY`: Used by `inngest.send()` to reliably dispatch events to your Inngest Cloud queue.
+
+#### D. Production Deployment Guidelines
+- **Hosting Provider Environment:** In platforms like Vercel, Railway, or AWS, configure all required production variables in the platform's Environment Variables dashboard.
+- **Build-Time vs. Runtime Variables:**
+  - Variables prefixed with `NEXT_PUBLIC_` (`NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `NEXT_PUBLIC_CONVEX_URL`, `NEXT_PUBLIC_SENTRY_DSN`) are evaluated and inlined into the client JavaScript bundle **at build time**. Changing any `NEXT_PUBLIC_` variable requires triggering a new build/deployment.
+  - Non-public variables (`CLERK_SECRET_KEY`, `OPENAI_API_KEY`, `NEXUS_CONVEX_INTERNAL_KEY`, `SENTRY_DSN`, `INNGEST_SIGNING_KEY`) are evaluated **at runtime** on the server.
+- **Production Convex Deployment:** Run `npx convex deploy` to deploy your database schema and functions to Convex production. Ensure production variables (`NEXUS_CONVEX_INTERNAL_KEY` and `CLERK_JWT_ISSUER_DOMAIN`) are set in the Convex production deployment environment.
+
+#### E. Security Rules and Best Practices
+1. **Never commit `.env.local`:** The `.gitignore` file excludes `.env*.local` by default. Never force-add or commit secrets into Git.
+2. **Public vs. Private Prefixing:** Only variables intended to be exposed to the browser client may use the `NEXT_PUBLIC_` prefix. Sensitive keys (`CLERK_SECRET_KEY`, `NEXUS_CONVEX_INTERNAL_KEY`, `OPENAI_API_KEY`, `SENTRY_DSN`) must never carry the `NEXT_PUBLIC_` prefix.
+3. **Safe DSN Isolation:** Nexus maintains separate Sentry configurations for client and server. `NEXT_PUBLIC_SENTRY_DSN` is bundled client-side, while `SENTRY_DSN` is kept strictly server-side.
+4. **Secret Rotation:** When rotating `NEXUS_CONVEX_INTERNAL_KEY`, generate a new key, update it in your hosting platform (or `.env.local`), update Convex via `npx convex env set`, and restart your application.
+
+---
+
+## 12. Environment Variables and Deployment Configuration
+
+This section provides a complete, source-verified reference for every environment variable supported by Nexus as cataloged in [`.env.example`](../.env.example).
+
+### Configuration Matrix
+
+| Variable | Purpose | Scope | Requirement | Configuration Location | Notes |
+|---|---|---|---|---|---|
+| `NEXT_PUBLIC_APP_URL` | Base public canonical URL of the application, used for metadata, OpenGraph tags, and external redirects. | Public (Browser / Client) | Optional | `.env.local`, Hosting / Build environment | Defaults to `http://localhost:3000` in local development. Bundled into client code at build time; requires restart / rebuild if changed. |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk public API key authorizing client-side authentication widgets, user profile components, and session handling. | Public (Browser / Client) | Required | `.env.local`, Hosting / Build environment | Required for authentication. Prefixed with `pk_test_` (dev) or `pk_live_` (prod). Injected into client bundle; requires rebuild / restart if modified. |
+| `CLERK_SECRET_KEY` | Server-side Clerk secret key used by Next.js API routes and middleware for user verification (`auth()`) and OAuth token exchange. | Server-only (Private) | Required | `.env.local`, Hosting / Server runtime environment | Required for user session validation and GitHub token retrieval. Prefixed with `sk_test_` or `sk_live_`. Never expose to the browser. |
+| `NEXT_PUBLIC_CLERK_SIGN_IN_URL` | Redirect pathname for the Clerk sign-in flow. | Public (Browser / Client) | Optional | `.env.local`, Hosting / Build environment | Defaults to `/sign-in`. Used by Clerk's routing middleware and auth guards. |
+| `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | Redirect pathname for the Clerk sign-up flow. | Public (Browser / Client) | Optional | `.env.local`, Hosting / Build environment | Defaults to `/sign-up`. Used by Clerk's routing middleware and auth guards. |
+| `NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL` | Target route where authenticated users are redirected after signing in. | Public (Browser / Client) | Optional | `.env.local`, Hosting / Build environment | Defaults to `/`. |
+| `NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL` | Target route where newly registered users are redirected after completing registration. | Public (Browser / Client) | Optional | `.env.local`, Hosting / Build environment | Defaults to `/`. |
+| `NEXT_PUBLIC_CONVEX_URL` | WebSocket and HTTP endpoint URL for the Convex backend deployment used by `<ConvexProviderWithClerk>` and backend client helpers. | Public (Browser / Client) | Required | `.env.local`, Hosting / Build environment | Automatically populated in `.env.local` by `npx convex dev`. Must point to the production Convex deployment URL in production. |
+| `CONVEX_DEPLOYMENT` | Deployment identifier target used by the Convex CLI to bind local files to a specific Convex project deployment. | Server / CLI toolchain | Required (Convex CLI & Cloud) | `.env.local`, Convex CLI / CI environment | Automatically managed by `npx convex dev` (e.g. `dev:nexus-app-12345`). Used when deploying or running schema updates. |
+| `NEXUS_CONVEX_INTERNAL_KEY` | Shared 32-byte hexadecimal secret authorizing internal, privileged system mutations and queries (`convex/system.ts`) without requiring a user JWT. | Server-only (Private shared secret) | Required | `.env.local` **AND** Convex deployment environment (`npx convex env set`) | **Must match exactly** across `.env.local` (or hosting environment) and Convex (`npx convex env set NEXUS_CONVEX_INTERNAL_KEY <secret>`). Used by Inngest workers and internal API endpoints. Never expose to client bundles. |
+| `CLERK_JWT_ISSUER_DOMAIN` | Clerk JWT template issuer domain used by Convex to verify client JWTs via `convex/auth.config.ts`. | Server-only (Convex runtime) | Required in Convex deployment | Convex deployment environment (`npx convex env set`) (Optional in `.env.local`) | Configured in Convex via `npx convex env set CLERK_JWT_ISSUER_DOMAIN https://<your-domain>.clerk.accounts.dev`. Allows Convex backend functions to authenticate user requests via `ctx.auth.getUserIdentity()`. |
+| `INNGEST_SIGNING_KEY` | HMAC signing key used to authenticate and cryptographically verify webhook calls from Inngest to `/api/inngest`. | Server-only (Private) | Optional for local dev; Required for production / Inngest Cloud | `.env.local` (if connecting to Cloud), Hosting / Server runtime environment | Not required when running against the local Inngest Dev Server (`npx inngest-cli@latest dev`). Mandatory in production deployments to prevent forged webhook dispatches. |
+| `INNGEST_EVENT_KEY` | Inngest event publication key allowing backend services to dispatch custom events to the Inngest Cloud event stream. | Server-only (Private) | Optional for local dev; Required for production / Inngest Cloud | `.env.local` (if publishing to Cloud), Hosting / Server runtime environment | Unnecessary when using local Inngest dev server. Required when dispatching workflow events to Inngest Cloud. |
+| `OPENAI_API_KEY` | API secret key used to authenticate requests to OpenAI models (`gpt-4.1-mini`) for code suggestions, quick-edit transformations, and assistant tool-calling agents. | Server-only (Private) | Required (for AI features) | `.env.local`, Hosting / Server runtime environment | Starts with `sk-proj-` or `sk-`. Consumed server-side in `/api/suggestion`, `/api/quick-edit`, and Inngest background workers (`process-message.ts`). Never prefix with `NEXT_PUBLIC_`. |
+| `FIRECRAWL_API_KEY` | API authentication key for Firecrawl web scraping service used by Cmd+K quick edit when URL references are supplied in instructions. | Server-only (Private) | Optional | `.env.local`, Hosting / Server runtime environment | If unset, documentation scraping from external URLs in quick edit is skipped or returns null without failing overall quick-edit execution. |
+| `NEXT_PUBLIC_SENTRY_DSN` | Sentry Data Source Name (DSN) for browser/client-side error reporting and performance monitoring. | Public (Browser / Client) | Optional | `.env.local`, Hosting / Build environment | If empty or unset, client-side Sentry initialization is safely skipped. Injected into the browser bundle at build time; requires restart / rebuild if changed. |
+| `SENTRY_DSN` | Sentry Data Source Name (DSN) for Node.js server and Edge runtime error tracking and exception logging. | Server-only (Private) | Optional | `.env.local`, Hosting / Server runtime environment | Read exclusively by `sentry.server.config.ts` and `sentry.edge.config.ts`. If unset or empty, server/edge Sentry reporting is disabled. Must never be exposed to the browser. |
+
+---
+
+### Implementation Details & Service Setup
+
+#### A. Local Setup Workflow
+1. Copy [`.env.example`](../.env.example) to `.env.local`:
+   ```bash
+   cp .env.example .env.local
+   ```
+2. Replace placeholder tokens (`replace_with_...`) with valid developer credentials from Clerk, Convex, and OpenAI.
+3. Variables for optional integrations (`FIRECRAWL_API_KEY`, `NEXT_PUBLIC_SENTRY_DSN`, `SENTRY_DSN`, `INNGEST_SIGNING_KEY`, `INNGEST_EVENT_KEY`) can remain empty or commented out if those services are not in active local use.
+4. **Development Server Restarts**: Any change to variables prefixed with `NEXT_PUBLIC_` (or changes to server-side variables loaded into the Node process) requires stopping and restarting `npm run dev` for Next.js to reload the environment configuration.
+
+#### B. Convex Backend Configuration
+- Running `npx convex dev` automatically generates and writes `NEXT_PUBLIC_CONVEX_URL` and `CONVEX_DEPLOYMENT` directly into your `.env.local`.
+- Convex functions run in an isolated serverless runtime and **do not** read `.env.local` directly. Therefore, variables needed by Convex backend logic must be set in the Convex deployment environment using the Convex CLI:
+  - **Shared Secret (`NEXUS_CONVEX_INTERNAL_KEY`)**:
+    ```bash
+    npx convex env set NEXUS_CONVEX_INTERNAL_KEY <your-32-byte-hex-secret>
+    ```
+  - **Clerk JWT Issuer (`CLERK_JWT_ISSUER_DOMAIN`)**:
+    ```bash
+    npx convex env set CLERK_JWT_ISSUER_DOMAIN https://<your-clerk-subdomain>.clerk.accounts.dev
+    ```
+- When deploying to production, these values must be configured in the production Convex deployment settings via the Convex Dashboard or `npx convex env set --prod`.
+
+#### C. Inngest Background Engine Configuration
+- **Local Development**: The local Inngest Dev Server (`npx inngest-cli@latest dev`) communicates directly over local HTTP (`http://localhost:3000/api/inngest`) without requiring `INNGEST_SIGNING_KEY` or `INNGEST_EVENT_KEY`.
+- **Production / Inngest Cloud**: When deploying to Vercel or cloud hosts, set `INNGEST_SIGNING_KEY` (obtained from the Inngest Cloud Dashboard) in your host's environment variables to enforce cryptographic signature verification on webhook deliveries to `/api/inngest`.
+
+#### D. Production Deployment & Build Considerations
+- When deploying the Next.js application to Vercel, Netlify, or custom Docker containers, all required environment variables must be configured in the hosting provider's dashboard or container environment.
+- **Build-Time vs. Runtime Variables**:
+  - `NEXT_PUBLIC_*` variables are statically inlined into browser JavaScript bundles during `npm run build`. Updating a `NEXT_PUBLIC_*` variable requires a full application rebuild and redeployment.
+  - Server-only variables (`CLERK_SECRET_KEY`, `OPENAI_API_KEY`, `NEXUS_CONVEX_INTERNAL_KEY`, `SENTRY_DSN`) are evaluated at request time by the server runtime.
+- **Shared Secret Parity**: Ensure that `NEXUS_CONVEX_INTERNAL_KEY` in the Next.js production hosting environment matches the value set in the production Convex deployment environment (`npx convex env set --prod`).
+
+#### E. Security Principles
+- **No Secrets in Public Variables**: Never prefix sensitive credentials (API keys, signing keys, webhook secrets, database connection strings) with `NEXT_PUBLIC_`.
+- **Git Protection**: `.env.local`, `.env*.local`, and real credentials must never be committed to source control (guarded by `.gitignore`).
+- **Placeholder Values**: Template values in `.env.example` are illustrative placeholders and must never be treated as functional credentials.
